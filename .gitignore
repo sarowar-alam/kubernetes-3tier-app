@@ -33,5 +33,5 @@ Thumbs.db
 .dockerignore
 
 # Kubernetes secrets (never commit real secrets)
-k8s/postgres/secret.yaml
-k8s/backend/secret.yaml
+#k8s/postgres/secret.yaml
+#k8s/backend/secret.yaml
