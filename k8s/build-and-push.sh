@@ -19,8 +19,8 @@ set -euo pipefail
 # CONFIGURE THESE THREE VALUES
 # ──────────────────────────────────────────────
 AWS_PROFILE="sarowar-ostad"            # AWS CLI profile to use on your local machine
-AWS_ACCOUNT_ID="YOUR_AWS_ACCOUNT_ID"   # e.g. 123456789012
-AWS_REGION="YOUR_REGION"               # e.g. ap-southeast-1
+AWS_ACCOUNT_ID="388779989543"   # e.g. 123456789012
+AWS_REGION="ap-south-1"               # e.g. ap-southeast-1
 # ──────────────────────────────────────────────
 
 # Export so all aws CLI sub-commands pick it up automatically
@@ -65,5 +65,7 @@ echo "✅ Done! Images pushed to ECR."
 echo "   Backend:  ${ECR_BASE}/bmi-backend:latest"
 echo "   Frontend: ${ECR_BASE}/bmi-frontend:latest"
 echo ""
-echo "Next step: run k8s/setup-ecr-secret.sh on the control-plane node,"
-echo "then run k8s/deploy.sh"
+echo "Next steps:"
+echo "  1. git add k8s/backend/deployment.yaml k8s/frontend/deployment.yaml"
+echo "  2. git commit -m 'Set ECR image URLs' && git push"
+echo "  3. SSH into control-plane and run: bash k8s/deploy.sh"
