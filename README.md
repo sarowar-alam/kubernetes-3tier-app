@@ -844,3 +844,12 @@ ECR tokens are short-lived. `Always` ensures the kubelet re-authenticates with E
 
 **Why does the frontend proxy `/api` at the nginx level rather than the browser making cross-origin requests?**  
 Eliminates CORS entirely, hides the backend address from clients, and allows the backend URL to change (e.g. cluster-internal DNS, different port) without any frontend code change.
+
+---
+
+## 🧑‍💻 Author
+
+*Md. Sarowar Alam*  
+Lead DevOps Engineer, Hogarth Worldwide  
+📧 Email: sarowar@hotmail.com  
+🔗 LinkedIn: https://www.linkedin.com/in/sarowar/

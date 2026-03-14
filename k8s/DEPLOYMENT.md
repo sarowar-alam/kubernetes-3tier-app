@@ -120,3 +120,12 @@ bash k8s/setup-ecr-secret.sh                    # manually refresh ECR token
 | DB data path (worker-1) | /data/postgres |
 | ECR token lifetime | 12 hours (auto-refreshed by `deploy.sh`) |
 | Secrets committed to git | ❌ Never — apply manually on cluster |
+
+---
+
+## 🧑‍💻 Author
+
+*Md. Sarowar Alam*  
+Lead DevOps Engineer, Hogarth Worldwide  
+📧 Email: sarowar@hotmail.com  
+🔗 LinkedIn: https://www.linkedin.com/in/sarowar/

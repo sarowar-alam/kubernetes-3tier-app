@@ -235,3 +235,12 @@ curl http://13.127.88.162:30080/api/measurements
 | DB storage path | `/data/postgres` on k8s-worker-1 |
 | ECR token lifetime | 12 hours (auto-refreshed by `deploy.sh`) |
 | Secrets in git | Never — apply manually on cluster |
+
+---
+
+## 🧑‍💻 Author
+
+*Md. Sarowar Alam*  
+Lead DevOps Engineer, Hogarth Worldwide  
+📧 Email: sarowar@hotmail.com  
+🔗 LinkedIn: https://www.linkedin.com/in/sarowar/
