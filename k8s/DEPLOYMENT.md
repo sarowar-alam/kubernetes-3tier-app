@@ -61,7 +61,13 @@ kubectl apply -f k8s/postgres/secret.yaml   # contains POSTGRES_PASSWORD
 kubectl apply -f k8s/backend/secret.yaml    # contains DATABASE_URL (password must match above)
 ```
 
-### 5. Control-plane — Deploy everything
+### 5. Local machine — Build images and push to ECR
+```bash
+bash k8s/build-and-push.sh
+```
+Builds both images, tags with git SHA, pushes to ECR, updates deployment YAMLs, and commits + pushes to git automatically.
+
+### 6. Control-plane — Deploy everything
 ```bash
 bash k8s/deploy.sh
 ```
@@ -85,9 +91,11 @@ Builds both images, tags with git SHA, pushes to ECR, updates deployment YAMLs, 
 **Control-plane:**
 ```bash
 cd kubernetes-3tier-app && git pull
-kubectl rollout restart deployment/bmi-backend  -n bmi-app
-kubectl rollout restart deployment/bmi-frontend -n bmi-app
+kubectl apply -f k8s/backend/deployment.yaml
+kubectl apply -f k8s/frontend/deployment.yaml
 ```
+
+> `kubectl apply` pushes the new image tag into the cluster spec, which automatically triggers a rolling update. No separate `rollout restart` needed.
 
 ---
 
