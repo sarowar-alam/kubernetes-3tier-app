@@ -1,71 +1,119 @@
 #!/usr/bin/env bash
 # =============================================================================
 # build-and-push.sh
-# Builds Docker images and pushes them to AWS ECR.
+# Builds Docker images, pushes to ECR, updates K8s manifests, and commits to git.
+#
+# Re-run this script every time you update the app code.
+# Each run produces a uniquely tagged image (git SHA) so deployments are
+# fully traceable and rollback is easy with: kubectl rollout undo
 #
 # Usage:
-#   chmod +x k8s/build-and-push.sh
-#   ./k8s/build-and-push.sh
+#   bash k8s/build-and-push.sh
 #
 # Prerequisites:
-#   - AWS CLI installed and configured (aws configure)
-#   - Docker installed and running
-#   - Two ECR repos already created: bmi-backend, bmi-frontend
+#   - Docker Desktop running
+#   - AWS CLI installed, profile 'sarowar-ostad' configured
+#   - Two ECR repos created: bmi-backend, bmi-frontend
 # =============================================================================
 
 set -euo pipefail
 
 # ──────────────────────────────────────────────
-# CONFIGURE THESE THREE VALUES
+# CONFIG — edit AWS_ACCOUNT_ID and AWS_REGION
 # ──────────────────────────────────────────────
-AWS_PROFILE="sarowar-ostad"            # AWS CLI profile to use on your local machine
-AWS_ACCOUNT_ID="388779989543"   # e.g. 123456789012
-AWS_REGION="ap-south-1"               # e.g. ap-southeast-1
+AWS_PROFILE="sarowar-ostad"
+AWS_ACCOUNT_ID="388779989543"
+AWS_REGION="ap-south-1"
 # ──────────────────────────────────────────────
 
-# Export so all aws CLI sub-commands pick it up automatically
 export AWS_PROFILE
 
 ECR_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-echo "==> Logging in to ECR..."
+# Use git short SHA as image tag — unique per commit, traceable, rollback-friendly.
+# If somehow not in a git repo, fall back to a timestamp.
+TAG=$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
+echo "================================================"
+echo " BMI Health Tracker — Build & Push"
+echo " Image tag : ${TAG}"
+echo " Timestamp : ${TIMESTAMP}"
+echo " Registry  : ${ECR_BASE}"
+echo "================================================"
+echo ""
+
+# ── Step 1: ECR login ────────────────────────────────────────────────────────
+echo "[1/5] Logging in to ECR..."
 aws ecr get-login-password --region "${AWS_REGION}" \
   | docker login --username AWS --password-stdin "${ECR_BASE}"
+echo ""
+
+# ── Step 2: Build ────────────────────────────────────────────────────────────
+echo "[2/5] Building backend image..."
+docker build -t "bmi-backend:${TAG}" ./backend
 
 echo ""
-echo "==> Building backend image..."
-docker build -t bmi-backend:latest ./backend
-
+echo "      Building frontend image..."
+docker build -t "bmi-frontend:${TAG}" ./frontend
 echo ""
-echo "==> Building frontend image..."
-docker build -t bmi-frontend:latest ./frontend
 
+# ── Step 3: Tag (versioned SHA + latest) ────────────────────────────────────
+echo "[3/5] Tagging images..."
+docker tag "bmi-backend:${TAG}"  "${ECR_BASE}/bmi-backend:${TAG}"
+docker tag "bmi-backend:${TAG}"  "${ECR_BASE}/bmi-backend:latest"
+docker tag "bmi-frontend:${TAG}" "${ECR_BASE}/bmi-frontend:${TAG}"
+docker tag "bmi-frontend:${TAG}" "${ECR_BASE}/bmi-frontend:latest"
 echo ""
-echo "==> Tagging images..."
-docker tag bmi-backend:latest  "${ECR_BASE}/bmi-backend:latest"
-docker tag bmi-frontend:latest "${ECR_BASE}/bmi-frontend:latest"
 
-echo ""
-echo "==> Pushing backend to ECR..."
+# ── Step 4: Push ─────────────────────────────────────────────────────────────
+echo "[4/5] Pushing backend to ECR..."
+docker push "${ECR_BASE}/bmi-backend:${TAG}"
 docker push "${ECR_BASE}/bmi-backend:latest"
 
 echo ""
-echo "==> Pushing frontend to ECR..."
+echo "      Pushing frontend to ECR..."
+docker push "${ECR_BASE}/bmi-frontend:${TAG}"
 docker push "${ECR_BASE}/bmi-frontend:latest"
-
 echo ""
-echo "==> Updating deployment manifests with ECR image URLs..."
-sed -i "s|YOUR_AWS_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com/bmi-backend:latest|${ECR_BASE}/bmi-backend:latest|g" \
+
+# ── Step 5: Update deployment YAMLs ──────────────────────────────────────────
+# Pattern matches ANY existing image value for these repos (works on every re-run).
+echo "[5/5] Updating deployment manifests..."
+sed -i "s|image: .*bmi-backend:.*|image: ${ECR_BASE}/bmi-backend:${TAG}|g" \
   k8s/backend/deployment.yaml
-sed -i "s|YOUR_AWS_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com/bmi-frontend:latest|${ECR_BASE}/bmi-frontend:latest|g" \
+sed -i "s|image: .*bmi-frontend:.*|image: ${ECR_BASE}/bmi-frontend:${TAG}|g" \
   k8s/frontend/deployment.yaml
 
+# Commit and push the updated manifests so the cluster always gets the latest
+git add k8s/backend/deployment.yaml k8s/frontend/deployment.yaml
+# Only commit if there's actually a change (first run or new tag)
+if git diff --staged --quiet; then
+  echo "      Manifests unchanged (same git SHA) — no commit needed."
+else
+  git commit -m "deploy: image tag ${TAG} (${TIMESTAMP})"
+  git push
+  echo "      Manifests committed and pushed to git."
+fi
+
 echo ""
-echo "✅ Done! Images pushed to ECR."
-echo "   Backend:  ${ECR_BASE}/bmi-backend:latest"
-echo "   Frontend: ${ECR_BASE}/bmi-frontend:latest"
+echo "================================================"
+echo " ✅ Done!"
 echo ""
-echo "Next steps:"
-echo "  1. git add k8s/backend/deployment.yaml k8s/frontend/deployment.yaml"
-echo "  2. git commit -m 'Set ECR image URLs' && git push"
-echo "  3. SSH into control-plane and run: bash k8s/deploy.sh"
+echo "   Backend:  ${ECR_BASE}/bmi-backend:${TAG}"
+echo "   Frontend: ${ECR_BASE}/bmi-frontend:${TAG}"
+echo ""
+echo " To roll out on the cluster:"
+echo "   ssh ubuntu@10.0.5.64"
+echo "   cd kubernetes-3tier-app && git pull"
+echo "   kubectl rollout restart deployment/bmi-backend  -n bmi-app"
+echo "   kubectl rollout restart deployment/bmi-frontend -n bmi-app"
+echo ""
+echo " To check rollout status:"
+echo "   kubectl rollout status deployment/bmi-backend  -n bmi-app"
+echo "   kubectl rollout status deployment/bmi-frontend -n bmi-app"
+echo ""
+echo " To rollback if something goes wrong:"
+echo "   kubectl rollout undo deployment/bmi-backend  -n bmi-app"
+echo "   kubectl rollout undo deployment/bmi-frontend -n bmi-app"
+echo "================================================"
