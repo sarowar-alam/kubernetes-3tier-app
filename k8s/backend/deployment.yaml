@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: bmi-backend
-          image: 388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-backend:latest
+          image: 388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-backend:aa95781
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
