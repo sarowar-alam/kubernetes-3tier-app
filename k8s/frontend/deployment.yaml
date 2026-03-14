@@ -17,7 +17,7 @@ spec:
         - name: bmi-frontend
           # TODO: Replace with your ECR image URL after pushing
           # Format: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/bmi-frontend:latest
-          image: YOUR_AWS_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com/bmi-frontend:latest
+          image: 388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-frontend:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 80
