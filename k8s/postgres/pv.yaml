@@ -1,0 +1,28 @@
+# PersistentVolume — cluster-scoped (no namespace)
+# Pinned to k8s-worker-1 via nodeAffinity so data survives pod reschedules.
+# The directory /data/postgres must exist on k8s-worker-1.
+#   sudo mkdir -p /data/postgres && sudo chmod 777 /data/postgres
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-pv
+  labels:
+    app: postgres
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /data/postgres
+    type: DirectoryOrCreate
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key:      kubernetes.io/hostname
+              operator: In
+              values:
+                - k8s-worker-1

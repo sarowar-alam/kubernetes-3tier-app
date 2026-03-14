@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: bmi-app
+data:
+  NODE_ENV:     "production"
+  PORT:         "3000"
+  # Set to your worker node's public/private IP and the frontend NodePort
+  FRONTEND_URL: "http://10.0.130.111:30080"

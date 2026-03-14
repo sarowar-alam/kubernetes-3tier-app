@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# Build output
+dist/
+build/
+frontend/dist/
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+backend/logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.dockerignore
+
+# Kubernetes secrets (never commit real secrets)
+k8s/postgres/secret.yaml
+k8s/backend/secret.yaml

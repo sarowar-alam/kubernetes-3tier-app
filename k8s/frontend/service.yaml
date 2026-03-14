@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bmi-frontend-svc
+  namespace: bmi-app
+spec:
+  type: NodePort
+  selector:
+    app: bmi-frontend
+  ports:
+    - port:       80
+      targetPort: 80
+      nodePort:   30080   # Access via http://<WORKER_NODE_IP>:30080
+      protocol:   TCP

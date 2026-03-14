@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bmi-backend
+  namespace: bmi-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bmi-backend
+  template:
+    metadata:
+      labels:
+        app: bmi-backend
+    spec:
+      containers:
+        - name: bmi-backend
+          # TODO: Replace with your ECR image URL after pushing
+          # Format: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/bmi-backend:latest
+          image: YOUR_AWS_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com/bmi-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+
+          envFrom:
+            - secretRef:
+                name: backend-secret
+            - configMapRef:
+                name: backend-config
+
+          resources:
+            requests:
+              cpu:    "100m"
+              memory: "128Mi"
+            limits:
+              cpu:    "300m"
+              memory: "256Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds:       30
+            timeoutSeconds:      5
+            failureThreshold:    3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds:       10
+            timeoutSeconds:      5
+            failureThreshold:    3
+      # No imagePullSecrets needed — ECR access is handled by the EC2 instance
+      # profile on each node via the kubelet credential provider.
+      # See k8s/setup-ecr-on-nodes.sh for one-time node setup instructions.
