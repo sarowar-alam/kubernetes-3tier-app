@@ -15,8 +15,6 @@ spec:
     spec:
       containers:
         - name: bmi-frontend
-          # TODO: Replace with your ECR image URL after pushing
-          # Format: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/bmi-frontend:latest
           image: 388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-frontend:latest
           imagePullPolicy: Always
           ports:
@@ -45,6 +43,5 @@ spec:
             initialDelaySeconds: 5
             periodSeconds:       10
             timeoutSeconds:      5
-      # No imagePullSecrets needed — ECR access is handled by the EC2 instance
-      # profile on each node via the kubelet credential provider.
-      # See k8s/setup-ecr-on-nodes.sh for one-time node setup instructions.
+      imagePullSecrets:
+        - name: ecr-credentials

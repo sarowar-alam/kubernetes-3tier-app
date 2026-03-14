@@ -5,15 +5,20 @@
 # Run this on the control-plane node (10.0.5.64).
 #
 # Usage:
-#   chmod +x k8s/deploy.sh
-#   ./k8s/deploy.sh
+#   bash k8s/deploy.sh
 #
-# Prerequisites (run ONCE before first deploy):
-#   1. On EACH cluster node, run: k8s/setup-ecr-on-nodes.sh
-#      This configures the EC2 instance profile to authenticate ECR image pulls.
+# Prerequisites (one-time setup before FIRST deploy):
+#   1. Install AWS CLI on control-plane:
+#      curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/a.zip
+#      unzip -q /tmp/a.zip -d /tmp && sudo /tmp/aws/install
+#   2. Attach IAM role with AmazonEC2ContainerRegistryReadOnly to both EC2 instances
+#   3. Create postgres & backend secrets manually (gitignored):
+#      kubectl apply -f k8s/namespace.yaml
+#      kubectl apply -f k8s/postgres/secret.yaml
+#      kubectl apply -f k8s/backend/secret.yaml
+#   4. Create hostPath directory on worker-1:
+#      ssh ubuntu@10.0.130.111 "sudo mkdir -p /data/postgres && sudo chmod 777 /data/postgres"
 # =============================================================================
-# NOTE: No imagePullSecrets are used. Image pulls authenticate via EC2 instance
-# profile on each node (configured by setup-ecr-on-nodes.sh).
 
 set -euo pipefail
 
@@ -22,6 +27,11 @@ NAMESPACE="bmi-app"
 echo "================================================"
 echo " BMI Health Tracker — Kubernetes Deployment"
 echo "================================================"
+echo ""
+
+# 0. Refresh ECR imagePullSecret (token expires every 12h)
+echo "[0/6] Refreshing ECR pull secret..."
+bash k8s/setup-ecr-secret.sh
 echo ""
 
 # 1. Namespace
@@ -48,7 +58,6 @@ echo ""
 # 3. Run database migrations
 echo "[3/6] Running database migrations..."
 kubectl apply -f k8s/postgres/migrations-configmap.yaml
-# Delete previous job if it exists (jobs are immutable after completion)
 kubectl delete job bmi-migrations -n "${NAMESPACE}" --ignore-not-found=true
 kubectl apply -f k8s/postgres/migration-job.yaml
 
@@ -81,9 +90,7 @@ echo ""
 # 6. Summary
 echo "[6/6] Deployment complete! Current pod status:"
 kubectl get pods -n "${NAMESPACE}"
-
 echo ""
 echo "================================================"
-echo " Access your app:"
-echo " http://10.0.130.111:30080"
+echo " ✅ App is live at: http://10.0.130.111:30080"
 echo "================================================"
