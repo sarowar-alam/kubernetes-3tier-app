@@ -7,11 +7,34 @@
 
 ## One-Time Setup (fresh cluster)
 
-### 1. AWS — Attach IAM role to both EC2 instances
-AWS Console → EC2 → each instance → Actions → Security → Modify IAM role.  
-Attach a role with `AmazonEC2ContainerRegistryReadOnly` to both:
+### 1. AWS — Create and attach IAM role to both EC2 instances
+
+#### Create the IAM role (once)
+
+1. Go to **AWS Console → IAM → Roles → Create role**
+2. **Trusted entity type:** AWS service
+3. **Use case:** EC2
+4. **Permissions — attach these two policies:**
+
+   | Policy name | Purpose |
+   |---|---|
+   | `AmazonEC2ContainerRegistryReadOnly` | Allows EC2 nodes to pull images from ECR |
+   | `AmazonEC2ReadOnlyAccess` | Optional — allows `aws sts get-caller-identity` for debugging |
+
+5. **Role name:** `k8s-node-ecr-role` (or any name you prefer)
+6. Click **Create role**
+
+#### Attach the role to both EC2 instances
+
+AWS Console → **EC2 → Instances** → select each instance → **Actions → Security → Modify IAM role** → select `k8s-node-ecr-role` → **Update IAM role**
+
+Do this for both:
 - `k8s-control-plane` — 10.0.5.64
 - `k8s-worker-1` — 10.0.130.111
+
+> **Why both nodes?**  
+> The control-plane needs it to run `aws ecr get-login-password` (used by `setup-ecr-secret.sh`).  
+> The worker nodes need it so kubelet can pull ECR images when scheduling pods.
 
 ### 2. Worker node — Create postgres data directory
 ```bash
