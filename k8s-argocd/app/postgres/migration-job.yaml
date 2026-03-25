@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bmi-migrations
+  namespace: bmi-app
+  annotations:
+    # PreSync hook: runs before any other resources are synced
+    # BeforeHookCreation: deletes the previous job before re-creating (idempotent)
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+
+      # Pin to worker-1 alongside the postgres pod
+      nodeSelector:
+        kubernetes.io/hostname: k8s-worker-1
+
+      initContainers:
+        # Wait until postgres is ready before running migrations
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for postgres to be ready..."
+              until nc -z bmi-postgres-svc 5432; do
+                echo "Postgres not ready yet, retrying in 3s..."
+                sleep 3
+              done
+              echo "Postgres is ready!"
+
+      containers:
+        - name: run-migrations
+          image: postgres:14
+          command:
+            - sh
+            - -c
+            - |
+              echo "Running migration 001..."
+              PGPASSWORD=$POSTGRES_PASSWORD psql \
+                -h bmi-postgres-svc \
+                -U $POSTGRES_USER \
+                -d $POSTGRES_DB \
+                -f /migrations/001_create_measurements.sql
+
+              echo "Running migration 002..."
+              PGPASSWORD=$POSTGRES_PASSWORD psql \
+                -h bmi-postgres-svc \
+                -U $POSTGRES_USER \
+                -d $POSTGRES_DB \
+                -f /migrations/002_add_measurement_date.sql
+
+              echo "All migrations completed successfully!"
+
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+
+      volumes:
+        - name: migrations
+          configMap:
+            name: postgres-migrations

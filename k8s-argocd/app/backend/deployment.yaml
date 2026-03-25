@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bmi-backend
+  namespace: bmi-app
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bmi-backend
+  template:
+    metadata:
+      labels:
+        app: bmi-backend
+    spec:
+      containers:
+        - name: bmi-backend
+          image: 388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-backend:205f30f
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+
+          envFrom:
+            - secretRef:
+                name: backend-secret
+            - configMapRef:
+                name: backend-config
+
+          resources:
+            requests:
+              cpu:    "100m"
+              memory: "128Mi"
+            limits:
+              cpu:    "300m"
+              memory: "256Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds:       30
+            timeoutSeconds:      5
+            failureThreshold:    3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds:       10
+            timeoutSeconds:      5
+            failureThreshold:    3
+      imagePullSecrets:
+        - name: ecr-credentials

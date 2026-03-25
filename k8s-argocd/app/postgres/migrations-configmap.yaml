@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-migrations
+  namespace: bmi-app
+data:
+  001_create_measurements.sql: |
+    -- BMI Health Tracker Database Migration
+    -- Version: 001
+    -- Description: Create measurements table
+
+    CREATE TABLE IF NOT EXISTS measurements (
+      id SERIAL PRIMARY KEY,
+      weight_kg NUMERIC(5,2) NOT NULL CHECK (weight_kg > 0 AND weight_kg < 1000),
+      height_cm NUMERIC(5,2) NOT NULL CHECK (height_cm > 0 AND height_cm < 300),
+      age INTEGER NOT NULL CHECK (age > 0 AND age < 150),
+      sex VARCHAR(10) NOT NULL CHECK (sex IN ('male', 'female')),
+      activity_level VARCHAR(30) CHECK (activity_level IN ('sedentary', 'light', 'moderate', 'active', 'very_active')),
+      bmi NUMERIC(4,1) NOT NULL,
+      bmi_category VARCHAR(30),
+      bmr INTEGER,
+      daily_calories INTEGER,
+      measurement_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      created_at TIMESTAMPTZ DEFAULT now() NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_measurements_measurement_date ON measurements(measurement_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_measurements_created_at ON measurements(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_measurements_bmi ON measurements(bmi);
+
+    SELECT '001: measurements table ready' AS status;
+
+  002_add_measurement_date.sql: |
+    -- BMI Health Tracker Database Migration
+    -- Version: 002
+    -- Description: Add measurement_date column for custom date tracking
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name='measurements' AND column_name='measurement_date'
+        ) THEN
+            ALTER TABLE measurements
+            ADD COLUMN measurement_date DATE NOT NULL DEFAULT CURRENT_DATE;
+
+            UPDATE measurements
+            SET measurement_date = DATE(created_at);
+
+            CREATE INDEX idx_measurements_measurement_date ON measurements(measurement_date DESC);
+
+            RAISE NOTICE 'Column measurement_date added successfully';
+        ELSE
+            RAISE NOTICE 'Column measurement_date already exists, skipping';
+        END IF;
+    END $$;
+
+    SELECT '002: measurement_date column ready' AS status;

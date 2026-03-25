@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bmi-health-tracker
+  namespace: argocd
+  # Cascade delete: removing this Application removes all managed resources
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/sarowar-alam/kubernetes-3tier-app
+    targetRevision: main
+    # ArgoCD watches ONLY this path — all app manifests live here
+    path: k8s-argocd/app
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: bmi-app
+
+  syncPolicy:
+    automated:
+      prune: true       # Remove resources deleted from git
+      selfHeal: true    # Revert any manual kubectl changes automatically
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true   # Handles larger ConfigMaps (migrations)
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

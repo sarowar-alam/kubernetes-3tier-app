@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: bmi-app
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  serviceName: bmi-postgres-svc
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # Pin to worker-1 so it co-locates with the hostPath PV
+      nodeSelector:
+        kubernetes.io/hostname: k8s-worker-1
+
+      containers:
+        - name: postgres
+          image: postgres:14
+          ports:
+            - containerPort: 5432
+
+          env:
+            # PGDATA must be a subdirectory of the mount point to avoid
+            # "directory is not empty" errors with hostPath volumes.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+
+          resources:
+            requests:
+              cpu:    "250m"
+              memory: "256Mi"
+            limits:
+              cpu:    "500m"
+              memory: "512Mi"
+
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "bmi_user", "-d", "bmidb"]
+            initialDelaySeconds: 30
+            periodSeconds:       20
+            timeoutSeconds:      5
+
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "bmi_user", "-d", "bmidb"]
+            initialDelaySeconds: 10
+            periodSeconds:       10
+            timeoutSeconds:      5
+
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc

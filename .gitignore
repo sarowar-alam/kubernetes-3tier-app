@@ -35,3 +35,10 @@ Thumbs.db
 # Kubernetes secrets (never commit real secrets)
 #k8s/postgres/secret.yaml
 #k8s/backend/secret.yaml
+
+# Copilot workspace instructions (personal, not for repo)
+.github/copilot-instructions.md
+
+# ArgoCD variant secrets (never commit real secrets)
+k8s-argocd/app/postgres/secret.yaml
+k8s-argocd/app/backend/secret.yaml
