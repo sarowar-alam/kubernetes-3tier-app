@@ -4,9 +4,10 @@ metadata:
   name: bmi-migrations
   namespace: bmi-app
   annotations:
-    # PreSync hook: runs before any other resources are synced
-    # BeforeHookCreation: deletes the previous job before re-creating (idempotent)
-    argocd.argoproj.io/hook: PreSync
+    # Sync hook wave 2: runs DURING sync, after the postgres StatefulSet (wave 1)
+    # is healthy. BeforeHookCreation deletes the previous job so it re-runs on
+    # every sync (idempotent migrations).
+    argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
     argocd.argoproj.io/sync-wave: "2"
 spec:

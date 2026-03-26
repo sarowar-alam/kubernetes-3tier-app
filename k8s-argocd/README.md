@@ -379,13 +379,13 @@ ArgoCD applies all resources in a namespace simultaneously by default. Sync wave
 
 | Wave | Resource | Why it must come first |
 |---|---|---|
-| `0` (default) | PV, PVC, Services, ConfigMaps | No dependencies |
-| `1` | PostgreSQL StatefulSet | Database must be up before migrations run |
-| `2` | Migration Job (PreSync hook) | Must complete before app starts; `BeforeHookCreation` deletes the previous job so it re-runs on every sync |
-| `3` | Backend Deployment | Needs the database and migrations to exist |
+| `0` (default) | PV, PVC, Services, ConfigMaps (incl. `postgres-migrations`) | No dependencies — applied first |
+| `1` | PostgreSQL StatefulSet | ArgoCD waits for the StatefulSet to be **healthy** before wave 2 |
+| `2` | Migration Job (`Sync` hook) | Postgres is ready by this point; init container confirms port 5432 is open before running SQL |
+| `3` | Backend Deployment | Needs the database schema to exist |
 | `4` | Frontend Deployment | Needs the backend service DNS to exist |
 
-The `PreSync` hook on the migration job means it runs **before** any wave-3/4 resources are touched — guaranteeing schema is always up to date before the app handles traffic.
+The migration job uses a **`Sync`** hook (not `PreSync`) so that ArgoCD applies postgres (wave 1) and waits for it to be healthy *before* running the migration. `BeforeHookCreation` deletes the previous completed job so migrations re-run on every sync (idempotent SQL).
 
 ---
 

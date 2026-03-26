@@ -3,11 +3,8 @@ kind: ConfigMap
 metadata:
   name: postgres-migrations
   namespace: bmi-app
-  annotations:
-    # Must be PreSync wave 1 so the ConfigMap exists before the migration Job (wave 2) mounts it
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    argocd.argoproj.io/sync-wave: "1"
+  # No hook annotation — regular Sync resource so it is never deleted by
+  # BeforeHookCreation. It must exist persistently for the Job to mount it.
 data:
   001_create_measurements.sql: |
     -- BMI Health Tracker Database Migration
