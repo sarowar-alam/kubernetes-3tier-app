@@ -147,12 +147,11 @@ kubectl rollout status deployment/argocd-server \
 echo ""
 
 # 6. Expose ArgoCD UI via NodePort (no ingress required)
-echo "[6/8] Exposing ArgoCD UI as NodePort..."
+echo "[6/8] Exposing ArgoCD UI as NodePort 30081..."
 kubectl patch svc argocd-server -n "${NAMESPACE_ARGOCD}" \
-  -p '{"spec":{"type":"NodePort"}}'
+  -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":8080,"nodePort":30081}]}}'
 
-ARGOCD_PORT=$(kubectl get svc argocd-server -n "${NAMESPACE_ARGOCD}" \
-  -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
+ARGOCD_PORT=30081
 echo "      ArgoCD UI available at: http://${PUBLIC_IP}:${ARGOCD_PORT}"
 echo ""
 

@@ -147,30 +147,27 @@ kubectl get pods -n argocd
 
 ---
 
-## Step 6 — Expose ArgoCD UI as NodePort
+## Step 6 — Expose ArgoCD UI as NodePort 30081
 
 ```bash
 kubectl patch svc argocd-server -n argocd \
-  -p '{"spec":{"type":"NodePort"}}'
+  -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":8080,"nodePort":30081}]}}'
 ```
 
-Get the assigned port and the public IP:
+Get the public IP:
 ```bash
-ARGOCD_PORT=$(kubectl get svc argocd-server -n argocd \
-  -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
-
 IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
   -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
 PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
   http://169.254.169.254/latest/meta-data/public-ipv4)
 
-echo "ArgoCD UI: http://${PUBLIC_IP}:${ARGOCD_PORT}"
+echo "ArgoCD UI: http://${PUBLIC_IP}:30081"
 ```
 
 **Verify:**
 ```bash
 kubectl get svc argocd-server -n argocd
-# Expected: TYPE=NodePort, PORT(S)=80:<port>/TCP
+# Expected: TYPE=NodePort, PORT(S)=80:30081/TCP
 ```
 
 ---
