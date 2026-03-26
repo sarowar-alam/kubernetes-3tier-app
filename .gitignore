@@ -40,5 +40,5 @@ Thumbs.db
 .github/copilot-instructions.md
 
 # ArgoCD variant secrets (never commit real secrets)
-k8s-argocd/app/postgres/secret.yaml
-k8s-argocd/app/backend/secret.yaml
+#k8s-argocd/app/postgres/secret.yaml
+#k8s-argocd/app/backend/secret.yaml

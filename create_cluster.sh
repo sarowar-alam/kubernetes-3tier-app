@@ -88,12 +88,10 @@ WORKER_IP_START=111
 
 # Kubernetes join credentials
 K8S_API_ENDPOINT="10.0.5.64:6443"
-# Token is generated fresh at script runtime (format: [a-z0-9]{6}.[a-z0-9]{16})
-# so it is never stale — it will be registered on the control-plane with TTL=0.
-KUBEADM_TOKEN="$(printf '%s.%s' \
-  "$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c6)" \
-  "$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c16)")"
-DISCOVERY_TOKEN_CA_CERT_HASH="sha256:b00b15f584873ea18856763dff8ea3e85bf4317df1f0a7b43cc0a77ddcf01e84"
+# Token + CA hash are fetched live from the control-plane via SSM after it boots.
+# Do NOT set these manually — get_join_command_via_ssm() populates them at runtime.
+KUBEADM_TOKEN=""
+DISCOVERY_TOKEN_CA_CERT_HASH=""
 
 # ─────────────────────────────────────────────
 # HELPERS
@@ -205,6 +203,204 @@ print_instance_info() {
 }
 
 # ─────────────────────────────────────────────
+# SSM JOIN-COMMAND FETCHER
+# ─────────────────────────────────────────────
+#
+# Waits for the control-plane EC2's SSM agent to register, then runs
+# 'kubeadm token create --print-join-command' on it via SSM Run Command.
+# Parses the output and sets KUBEADM_TOKEN + DISCOVERY_TOKEN_CA_CERT_HASH
+# in the calling shell so worker user-data can embed the real, live values.
+#
+# Args: <cp-instance-id>
+get_join_command_via_ssm() {
+  local instance_id="$1"
+
+  # ── Step 1: Wait for SSM agent to register (up to 10 min) ────────
+  log "Waiting for SSM agent on ${instance_id} (up to 10 min)..."
+  for (( attempt=1; attempt<=40; attempt++ )); do
+    local ssm_ready
+    ssm_ready=$(aws ssm describe-instance-information \
+      --profile "${AWS_PROFILE}" \
+      --region  "${AWS_REGION}" \
+      --filters "Key=InstanceIds,Values=${instance_id}" \
+      --query   'InstanceInformationList[0].InstanceId' \
+      --output  text 2>/dev/null || true)
+    if [[ "${ssm_ready}" == "${instance_id}" ]]; then
+      log "  SSM agent ready."
+      break
+    fi
+    log "  SSM not ready (attempt ${attempt}/40), waiting 15s..."
+    sleep 15
+    if (( attempt == 40 )); then
+      die "SSM agent never became ready on ${instance_id}. Verify the IAM instance profile has the AmazonSSMManagedInstanceCore policy."
+    fi
+  done
+
+  # ── Step 2: Send 'kubeadm token create --print-join-command' ─────
+  # The remote script waits up to 5 min for the K8s API server to be
+  # fully initialised before creating the token.
+  log "Sending 'kubeadm token create --print-join-command' via SSM..."
+  local cmd_id
+  cmd_id=$(aws ssm send-command \
+    --profile       "${AWS_PROFILE}" \
+    --region        "${AWS_REGION}" \
+    --instance-ids  "${instance_id}" \
+    --document-name "AWS-RunShellScript" \
+    --comment       "Fetch kubeadm join command for cluster provisioning" \
+    --parameters    'commands=["for i in $(seq 1 30); do kubectl get nodes --kubeconfig /etc/kubernetes/admin.conf >/dev/null 2>&1 && break; echo \"K8s API not ready ($i/30) — waiting 10s...\"; sleep 10; done; kubeadm token create --print-join-command"]' \
+    --query         'Command.CommandId' \
+    --output        text) \
+    || die "Failed to send SSM command to ${instance_id}"
+
+  log "  SSM command ID: ${cmd_id}"
+
+  # ── Step 3: Poll until the command finishes (up to 8 min) ────────
+  log "Waiting for SSM command to complete..."
+  local status=""
+  for (( attempt=1; attempt<=32; attempt++ )); do
+    status=$(aws ssm get-command-invocation \
+      --profile     "${AWS_PROFILE}" \
+      --region      "${AWS_REGION}" \
+      --command-id  "${cmd_id}" \
+      --instance-id "${instance_id}" \
+      --query       'Status' \
+      --output      text 2>/dev/null || echo "Pending")
+    case "${status}" in
+      Success)
+        log "  Command succeeded."
+        break
+        ;;
+      Failed|Cancelled|TimedOut)
+        die "SSM command ended with status '${status}'. Inspect with:
+  aws ssm get-command-invocation \\
+    --command-id  ${cmd_id} \\
+    --instance-id ${instance_id} \\
+    --profile     ${AWS_PROFILE} \\
+    --region      ${AWS_REGION}"
+        ;;
+      *)
+        log "  Status: ${status:-Pending} (attempt ${attempt}/32) — waiting 15s..."
+        sleep 15
+        ;;
+    esac
+    if (( attempt == 32 )); then
+      die "Timed out waiting for SSM command to complete."
+    fi
+  done
+
+  # ── Step 4: Parse token + CA hash from the command output ────────
+  local raw
+  raw=$(aws ssm get-command-invocation \
+    --profile     "${AWS_PROFILE}" \
+    --region      "${AWS_REGION}" \
+    --command-id  "${cmd_id}" \
+    --instance-id "${instance_id}" \
+    --query       'StandardOutputContent' \
+    --output      text)
+
+  local join_line
+  join_line=$(echo "${raw}" | grep -E '^kubeadm join' | tail -1)
+  [[ -z "${join_line}" ]] && die "No 'kubeadm join' line found in SSM output. Full output:\n${raw}"
+
+  KUBEADM_TOKEN=$(echo "${join_line}"                | grep -oE '[a-z0-9]{6}\.[a-z0-9]{16}')
+  DISCOVERY_TOKEN_CA_CERT_HASH=$(echo "${join_line}" | grep -oE 'sha256:[a-f0-9]{64}')
+
+  [[ -z "${KUBEADM_TOKEN}" ]]                && die "Could not parse --token from join line: ${join_line}"
+  [[ -z "${DISCOVERY_TOKEN_CA_CERT_HASH}" ]] && die "Could not parse --discovery-token-ca-cert-hash from join line: ${join_line}"
+
+  log "  Token : ${KUBEADM_TOKEN}"
+  log "  Hash  : ${DISCOVERY_TOKEN_CA_CERT_HASH}"
+  echo "" >&2
+  echo "  ┌─ Join command (valid for 24h, save for manual use) ─────────────────" >&2
+  echo "  │  ${join_line}" >&2
+  echo "  └──────────────────────────────────────────────────────────────────────" >&2
+  echo "" >&2
+}
+
+# ─────────────────────────────────────────────
+# CLUSTER HEALTH VERIFICATION VIA SSM
+# ─────────────────────────────────────────────
+#
+# SSMs into the control-plane and polls 'kubectl get nodes' until all
+# expected nodes (1 CP + WORKER_COUNT workers) show Ready, or times out.
+#
+# Args: <cp-instance-id> <expected-node-count>
+verify_cluster_via_ssm() {
+  local instance_id="$1"
+  local expected_count="$2"
+  local max_attempts=40   # 40 × 15s = 10 min
+  local attempt
+
+  log "Verifying cluster health via SSM (waiting for ${expected_count} Ready node(s), up to 10 min)..."
+
+  for (( attempt=1; attempt<=max_attempts; attempt++ )); do
+    # Run kubectl get nodes on the CP and capture output
+    local cmd_id
+    cmd_id=$(aws ssm send-command \
+      --profile       "${AWS_PROFILE}" \
+      --region        "${AWS_REGION}" \
+      --instance-ids  "${instance_id}" \
+      --document-name "AWS-RunShellScript" \
+      --comment       "kubectl get nodes health check" \
+      --parameters    'commands=["kubectl get nodes --kubeconfig /etc/kubernetes/admin.conf 2>&1"]' \
+      --query         'Command.CommandId' \
+      --output        text 2>/dev/null) || { log "  SSM send-command failed, retrying..."; sleep 15; continue; }
+
+    # Wait for the command to finish (up to 30s)
+    local status=""
+    for (( w=1; w<=6; w++ )); do
+      status=$(aws ssm get-command-invocation \
+        --profile     "${AWS_PROFILE}" \
+        --region      "${AWS_REGION}" \
+        --command-id  "${cmd_id}" \
+        --instance-id "${instance_id}" \
+        --query       'Status' \
+        --output      text 2>/dev/null || echo "Pending")
+      [[ "${status}" == "Success" || "${status}" == "Failed" ]] && break
+      sleep 5
+    done
+
+    local output
+    output=$(aws ssm get-command-invocation \
+      --profile     "${AWS_PROFILE}" \
+      --region      "${AWS_REGION}" \
+      --command-id  "${cmd_id}" \
+      --instance-id "${instance_id}" \
+      --query       'StandardOutputContent' \
+      --output      text 2>/dev/null || true)
+
+    # Count lines that contain " Ready "
+    local ready_count
+    ready_count=$(echo "${output}" | grep -c ' Ready ' || true)
+
+    log "  Attempt ${attempt}/${max_attempts}: ${ready_count}/${expected_count} node(s) Ready"
+
+    if (( ready_count >= expected_count )); then
+      echo "" >&2
+      echo "  ============================================================" >&2
+      echo "  ✅  All ${expected_count} node(s) are Ready!" >&2
+      echo "  ============================================================" >&2
+      echo "${output}" | sed 's/^/  /' >&2
+      echo "" >&2
+      return 0
+    fi
+
+    sleep 15
+  done
+
+  # Timed out — print whatever state we have and warn (don't die — instances are up)
+  echo "" >&2
+  echo "  ⚠️  Timed out waiting for all nodes to be Ready." >&2
+  echo "  Last 'kubectl get nodes' output:" >&2
+  echo "${output}" | sed 's/^/  /' >&2
+  echo "" >&2
+  echo "  Workers may still be joining. Check manually:" >&2
+  echo "  aws ssm start-session --target ${instance_id} --profile ${AWS_PROFILE} --region ${AWS_REGION}" >&2
+  echo "  Then: kubectl get nodes" >&2
+  echo "" >&2
+}
+
+# ─────────────────────────────────────────────
 # USER-DATA SCRIPTS
 # ─────────────────────────────────────────────
 
@@ -230,12 +426,6 @@ cat >> /etc/hosts <<'HOSTS'
 ${hosts_block}
 # --- end cluster nodes ---
 HOSTS
-
-# Register the join token with no expiry so workers can join at any time
-echo "Registering kubeadm join token (TTL=0)..."
-kubeadm token create ${KUBEADM_TOKEN} --ttl 0 >> /var/log/kubeadm-token.log 2>&1 && \
-  echo "Token ${KUBEADM_TOKEN} registered." >> /var/log/kubeadm-token.log || \
-  echo "Token registration failed (may already exist)." >> /var/log/kubeadm-token.log
 EOF
 }
 
@@ -400,6 +590,12 @@ main() {
   log "  Control plane instance ID: ${cp_id}"
   echo ""
 
+  # ── Wait for CP running state, then fetch live join command via SSM ──
+  # Workers are created AFTER this so their user-data embeds the real token.
+  wait_for_instances "${cp_id}"
+  get_join_command_via_ssm "${cp_id}"
+  echo ""
+
   # ── Worker Nodes ─────────────────────────────────────────────────
   log "--- Provisioning ${WORKER_COUNT} Worker Node(s) ---"
   local worker_ids=()
@@ -428,8 +624,14 @@ main() {
 
   echo ""
 
-  # ── Wait for all instances ────────────────────────────────────────
-  wait_for_instances "${all_ids[@]}"
+  # ── Wait for worker instances (CP already waited above) ───────────
+  if [[ ${#worker_ids[@]} -gt 0 ]]; then
+    wait_for_instances "${worker_ids[@]}"
+  fi
+
+  # ── Verify all nodes are Ready via SSM on the control-plane ──────
+  local total_nodes=$(( 1 + WORKER_COUNT ))
+  verify_cluster_via_ssm "${cp_id}" "${total_nodes}"
 
   # ── Summary ──────────────────────────────────────────────────────
   echo ""
