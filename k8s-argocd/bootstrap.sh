@@ -47,17 +47,43 @@ echo "[3/7] Creating PersistentVolume..."
 kubectl apply -f k8s-argocd/app/postgres/pv.yaml
 echo ""
 
-# 4. Create worker-1 data directory if not done yet
-echo "[4/7] Ensuring /data/postgres exists on k8s-worker-1..."
-ssh ubuntu@10.0.130.111 \
-  "sudo mkdir -p /data/postgres && sudo chmod 777 /data/postgres" \
-  && echo "      Directory ready." \
-  || echo "      Skipped (already exists or SSH not configured — ensure this is done manually)."
+# 4. Create worker-1 data directory via SSM (no SSH keys required)
+echo "[4/7] Ensuring /data/postgres exists on k8s-worker-1 (via SSM)..."
+
+WORKER1_INSTANCE_ID=$(aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=k8s-worker-1" "Name=instance-state-name,Values=running" \
+  --query 'Reservations[0].Instances[0].InstanceId' \
+  --output text 2>/dev/null || true)
+
+if [[ -z "${WORKER1_INSTANCE_ID}" || "${WORKER1_INSTANCE_ID}" == "None" ]]; then
+  echo "      ⚠️  Could not find k8s-worker-1 instance via AWS CLI."
+  echo "         Create the directory manually on worker-1:"
+  echo "         sudo mkdir -p /data/postgres && sudo chmod 777 /data/postgres"
+else
+  CMD_ID=$(aws ssm send-command \
+    --instance-ids  "${WORKER1_INSTANCE_ID}" \
+    --document-name "AWS-RunShellScript" \
+    --parameters    'commands=["sudo mkdir -p /data/postgres && sudo chmod 777 /data/postgres && echo OK"]' \
+    --query         'Command.CommandId' \
+    --output        text 2>/dev/null || true)
+
+  if [[ -n "${CMD_ID}" ]]; then
+    sleep 5
+    STATUS=$(aws ssm get-command-invocation \
+      --command-id  "${CMD_ID}" \
+      --instance-id "${WORKER1_INSTANCE_ID}" \
+      --query       'Status' --output text 2>/dev/null || echo "Unknown")
+    echo "      SSM command status: ${STATUS} (instance: ${WORKER1_INSTANCE_ID})"
+  else
+    echo "      ⚠️  SSM command failed. Create directory manually on worker-1:"
+    echo "         sudo mkdir -p /data/postgres && sudo chmod 777 /data/postgres"
+  fi
+fi
 echo ""
 
-# 5. Install ArgoCD
+# 5. Install ArgoCD (--server-side avoids CRD annotation size limit)
 echo "[5/7] Installing ArgoCD into namespace '${NAMESPACE_ARGOCD}'..."
-kubectl apply -n "${NAMESPACE_ARGOCD}" \
+kubectl apply -n "${NAMESPACE_ARGOCD}" --server-side \
   -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
 echo "      Waiting for ArgoCD server to be ready (up to 3 minutes)..."

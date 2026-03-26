@@ -9,7 +9,7 @@
 
 1. [What This Is](#1-what-this-is)
 2. [Architecture Overview](#2-architecture-overview)
-3. [How ArgoCD Changes the Workflow](#3-how-argocd-changes-the-workflow)
+3. [How Deployments Work](#3-how-deployments-work)
 4. [Repository Layout](#4-repository-layout)
 5. [Prerequisites](#5-prerequisites)
 6. [Cluster & AWS Setup (one-time)](#6-cluster--aws-setup-one-time)
@@ -30,13 +30,6 @@
 ## 1. What This Is
 
 This directory (`k8s-argocd/`) is a **self-contained GitOps delivery system** for the BMI Health Tracker — a 3-tier application (React frontend, Node.js backend, PostgreSQL database) running on a self-managed Kubernetes cluster on AWS EC2.
-
-It is **separate from and independent of** the original `k8s/` manual deployment directory. Both can coexist in the same repository. The original `k8s/` workflow is unaffected.
-
-| Approach | Directory | How deploys happen |
-|---|---|---|
-| Manual (`kubectl apply`) | `k8s/` | SSH to control-plane, run `deploy.sh` |
-| GitOps (ArgoCD) | `k8s-argocd/` | `git push` — ArgoCD does the rest |
 
 **Live app:** http://13.127.88.162:30080  
 **GitHub repo:** https://github.com/sarowar-alam/kubernetes-3tier-app
@@ -98,16 +91,8 @@ Only one port (`30080`) is exposed externally. The backend and database are unre
 
 ---
 
-## 3. How ArgoCD Changes the Workflow
+## 3. How Deployments Work
 
-### Before (manual)
-```
-local: bash k8s/build-and-push.sh
-  SSH → control-plane
-  control-plane: bash k8s/deploy.sh
-```
-
-### After (ArgoCD)
 ```
 local: bash k8s-argocd/build-and-push.sh
   (done — ArgoCD detects the git diff and syncs automatically)
@@ -218,13 +203,20 @@ The cluster nodes need permission to pull images from ECR without static credent
 
 ### 6.2 Create PostgreSQL data directory on worker-1
 
+`bootstrap.sh` handles this automatically via SSM. If you need to do it manually:
+
 ```bash
-ssh ubuntu@10.0.130.111
+# Get the worker-1 instance ID
+aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=k8s-worker-1" \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text
+
+# Run via SSM (no SSH keys required)
+aws ssm start-session --target <instance-id>
+# Then:
 sudo mkdir -p /data/postgres && sudo chmod 777 /data/postgres
 exit
 ```
-
-This directory is the `hostPath` backing the PostgreSQL PersistentVolume. It must exist before the StatefulSet starts.
 
 ### 6.3 Create ECR repositories (if not already created)
 
@@ -239,6 +231,14 @@ aws ecr create-repository --repository-name bmi-frontend --region ap-south-1
 ## 7. Secrets Setup (one-time, never committed)
 
 Two secret files are **gitignored** and must be created locally and applied to the cluster manually before the first bootstrap.
+
+### 7.0 Create the namespace first
+
+Secrets are namespaced resources — the `bmi-app` namespace must exist before applying them:
+
+```bash
+kubectl apply -f k8s-argocd/app/namespace.yaml
+```
 
 ### 7.1 PostgreSQL secret
 
@@ -566,10 +566,6 @@ Edit `app/backend/deployment.yaml` and `app/frontend/deployment.yaml`, replace t
 ---
 
 ## 16. Design Decisions
-
-### Why a separate `k8s-argocd/` directory?
-
-The original `k8s/` workflow is kept intact so engineers can compare both approaches and either method can be the active one. Keeping them separate means zero risk of the ArgoCD changes breaking the existing working deployment.
 
 ### Why git SHA image tags (not `latest`)?
 
