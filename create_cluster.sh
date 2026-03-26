@@ -342,7 +342,7 @@ verify_cluster_via_ssm() {
       --instance-ids  "${instance_id}" \
       --document-name "AWS-RunShellScript" \
       --comment       "kubectl get nodes health check" \
-      --parameters    'commands=["kubectl get nodes --kubeconfig /etc/kubernetes/admin.conf 2>&1"]' \
+      --parameters    'commands=["kubectl get nodes -o json --kubeconfig /etc/kubernetes/admin.conf 2>&1"]' \
       --query         'Command.CommandId' \
       --output        text 2>/dev/null) || { log "  SSM send-command failed, retrying..."; sleep 15; continue; }
 
@@ -369,19 +369,46 @@ verify_cluster_via_ssm() {
       --query       'StandardOutputContent' \
       --output      text 2>/dev/null || true)
 
-    # Count Ready nodes whose AGE is NOT in days (e.g. "32d") — filters out
-    # stale node objects baked into the AMI etcd that would give a false positive.
+    # Count nodes whose Ready condition is True AND heartbeat was within last 5 min.
+    # Using JSON output + jq avoids the AGE-column false-positive filter that
+    # incorrectly excluded baked AMI nodes (which always show "32d" as their creation age).
     local ready_count
-    ready_count=$(echo "${output}" | grep ' Ready ' | grep -cvE '[[:space:]][0-9]+d[[:space:]]' || true)
+    ready_count=$(echo "${output}" | jq -r '
+      .items[]
+      | select(
+          (.status.conditions[] | select(.type=="Ready") | .status) == "True"
+          and
+          ((.status.conditions[] | select(.type=="Ready") | .lastHeartbeatTime)
+            | (now - (. | fromdateiso8601)) < 300)
+        )
+      | .metadata.name' 2>/dev/null | wc -l | tr -d ' ' || echo "0")
 
-    log "  Attempt ${attempt}/${max_attempts}: ${ready_count}/${expected_count} node(s) Ready"
+    # Fallback: if jq is unavailable, just count " Ready " lines (pre-jq behaviour)
+    if ! command -v jq >/dev/null 2>&1; then
+      ready_count=$(echo "${output}" | grep -c '"Ready"' || true)
+    fi
+
+    # Print a human-readable table alongside the count for visibility
+    local table
+    table=$(echo "${output}" | jq -r '
+      ["NAME","STATUS","ROLES","AGE","VERSION"],
+      (.items[] | [
+        .metadata.name,
+        (.status.conditions[] | select(.type=="Ready") | if .status=="True" then "Ready" else "NotReady" end),
+        ((.metadata.labels // {}) | to_entries | map(select(.key | startswith("node-role"))) | map(.key | split("/")[1]) | join(",") | if . == "" then "<none>" else . end),
+        .metadata.creationTimestamp,
+        .status.nodeInfo.kubeletVersion
+      ])
+      | @tsv' 2>/dev/null | column -t 2>/dev/null || echo "${output}")
+
+    log "  Attempt ${attempt}/${max_attempts}: ${ready_count}/${expected_count} node(s) with live heartbeat Ready"
 
     if (( ready_count >= expected_count )); then
       echo "" >&2
       echo "  ============================================================" >&2
       echo "  ✅  All ${expected_count} node(s) are Ready!" >&2
       echo "  ============================================================" >&2
-      echo "${output}" | sed 's/^/  /' >&2
+      echo "${table}" | sed 's/^/  /' >&2
       echo "" >&2
       return 0
     fi
