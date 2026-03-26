@@ -82,6 +82,18 @@ kubectl get pv postgres-pv
 
 ## Step 4 — Create `/data/postgres` Directory on worker-1
 
+First, delete the stale node object that the AMI bakes into etcd (causes kubeadm join to fail):
+```bash
+kubectl delete node k8s-worker-1 --ignore-not-found
+```
+
+Wait for worker-1 to re-register as Ready:
+```bash
+watch kubectl get nodes
+# Wait until k8s-worker-1 shows Ready before continuing
+```
+
+Then create the data directory:
 ```bash
 kubectl run mkdir-postgres -n bmi-app --restart=Never \
   --image=busybox \

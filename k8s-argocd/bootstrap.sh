@@ -107,6 +107,25 @@ echo ""
 
 # 4. Create worker-1 data directory via a temporary pod (no SSH or IAM required)
 echo "[4/8] Ensuring /data/postgres exists on k8s-worker-1 (via kubectl pod)..."
+
+# Delete stale node object for k8s-worker-1 if it exists from a previous cluster
+# bootstrap. If the node re-joined cleanly it will re-register itself automatically.
+kubectl delete node k8s-worker-1 --ignore-not-found 2>/dev/null && \
+  echo "      Removed stale node object (if any)." || true
+
+# Wait for worker-1 to re-register as Ready before scheduling the busybox pod
+echo "      Waiting for k8s-worker-1 to be Ready (up to 3 min)..."
+for i in $(seq 1 36); do
+  STATUS=$(kubectl get node k8s-worker-1 --no-headers 2>/dev/null | awk '{print $2}')
+  if [[ "${STATUS}" == "Ready" ]]; then
+    echo "      k8s-worker-1 is Ready."
+    break
+  fi
+  if [[ $i -eq 36 ]]; then
+    echo "      ⚠️  k8s-worker-1 not Ready after 3 min — check: kubectl get nodes"
+  fi
+  sleep 5
+done
 kubectl run mkdir-postgres -n "${NAMESPACE_APP}" --restart=Never \
   --image=busybox \
   --overrides='{

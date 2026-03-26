@@ -641,6 +641,38 @@ main() {
 
   # ── Worker Nodes ─────────────────────────────────────────────────
   log "--- Provisioning ${WORKER_COUNT} Worker Node(s) ---"
+
+  # Delete any stale worker node objects baked into the AMI's etcd.
+  # If they exist, kubeadm join will fail with "Node already exists".
+  log "Deleting stale worker node objects from control-plane etcd..."
+  local delete_nodes_cmd=""
+  for (( i=1; i<=WORKER_COUNT; i++ )); do
+    delete_nodes_cmd+="kubectl --kubeconfig /etc/kubernetes/admin.conf delete node k8s-worker-${i} --ignore-not-found 2>&1; "
+  done
+  local del_cmd_id
+  del_cmd_id=$(aws ssm send-command \
+    --profile       "${AWS_PROFILE}" \
+    --region        "${AWS_REGION}" \
+    --instance-ids  "${cp_id}" \
+    --document-name "AWS-RunShellScript" \
+    --comment       "Delete stale worker node objects before join" \
+    --parameters    "commands=[\"${delete_nodes_cmd}\"]" \
+    --query         'Command.CommandId' \
+    --output        text 2>/dev/null) || true
+  if [[ -n "${del_cmd_id}" ]]; then
+    sleep 8
+    local del_out
+    del_out=$(aws ssm get-command-invocation \
+      --profile     "${AWS_PROFILE}" \
+      --region      "${AWS_REGION}" \
+      --command-id  "${del_cmd_id}" \
+      --instance-id "${cp_id}" \
+      --query       'StandardOutputContent' \
+      --output      text 2>/dev/null || true)
+    log "  Node cleanup: ${del_out:-done}"
+  fi
+  echo ""
+
   local worker_ids=()
 
   for (( i=1; i<=WORKER_COUNT; i++ )); do
