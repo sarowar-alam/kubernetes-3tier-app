@@ -299,13 +299,16 @@ bash k8s-argocd/bootstrap.sh
 
 | Step | Action |
 |---|---|
+| 0 | Installs AWS CLI if not already present (required for ECR token refresh) |
 | 1 | Creates `argocd` and `bmi-app` namespaces |
-| 2 | Applies the gitignored secrets (postgres + backend) |
+| 2 | Applies the gitignored secrets (`postgres-secret` + `backend-secret`) |
 | 3 | Creates the PostgreSQL PersistentVolume (cluster-scoped) |
-| 4 | Creates `/data/postgres` on worker-1 via SSH |
+| 4 | Creates `/data/postgres` on worker-1 via a temporary `busybox` pod (no SSH needed) |
+| 4.5 | Creates the `ecr-credentials` pull secret so pods can pull images from ECR |
 | 5 | Installs ArgoCD from the official stable manifest |
 | 6 | Exposes the ArgoCD UI as a NodePort service |
 | 7 | Creates the ArgoCD Application — this triggers the **first automated sync** |
+| 8 | Prints a live verification summary (namespaces, secrets, PV, ArgoCD app status) |
 
 At the end, the script prints:
 

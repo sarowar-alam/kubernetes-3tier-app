@@ -36,6 +36,21 @@ echo " BMI Health Tracker — ArgoCD Bootstrap"
 echo "================================================"
 echo ""
 
+# ── Step 0: ensure AWS CLI is installed (required for ECR token refresh) ─────
+if ! command -v aws >/dev/null 2>&1; then
+  echo "[0/8] AWS CLI not found — installing..."
+  apt-get install -y unzip 2>/dev/null || true
+  curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip \
+    -o /tmp/aws-cli.zip
+  unzip -q /tmp/aws-cli.zip -d /tmp
+  sudo /tmp/aws/install
+  rm -rf /tmp/aws-cli.zip /tmp/aws
+  echo "      ✅  AWS CLI $(aws --version 2>&1) installed."
+else
+  echo "[0/8] AWS CLI already present: $(aws --version 2>&1)"
+fi
+echo ""
+
 # ── Pre-flight: verify all required local files exist ────────────────────────
 echo "[pre-flight] Checking required local files..."
 FILES_OK=true
@@ -73,25 +88,25 @@ echo "  All required files present."
 echo ""
 
 # 1. Create namespaces
-echo "[1/7] Creating namespaces..."
+echo "[1/8] Creating namespaces..."
 kubectl apply -f k8s-argocd/argocd/namespace.yaml
 kubectl apply -f k8s-argocd/app/namespace.yaml
 echo ""
 
 # 2. Apply gitignored secrets (one-time, manual step)
-echo "[2/7] Applying secrets (gitignored — must exist locally)..."
+echo "[2/8] Applying secrets (gitignored — must exist locally)..."
 kubectl apply -f k8s-argocd/app/postgres/secret.yaml
 kubectl apply -f k8s-argocd/app/backend/secret.yaml
 echo "      Secrets applied."
 echo ""
 
 # 3. Create PersistentVolume (cluster-scoped, not namespace-scoped)
-echo "[3/7] Creating PersistentVolume..."
+echo "[3/8] Creating PersistentVolume..."
 kubectl apply -f k8s-argocd/app/postgres/pv.yaml
 echo ""
 
 # 4. Create worker-1 data directory via a temporary pod (no SSH or IAM required)
-echo "[4/7] Ensuring /data/postgres exists on k8s-worker-1 (via kubectl pod)..."
+echo "[4/8] Ensuring /data/postgres exists on k8s-worker-1 (via kubectl pod)..."
 kubectl run mkdir-postgres -n "${NAMESPACE_APP}" --restart=Never \
   --image=busybox \
   --overrides='{
