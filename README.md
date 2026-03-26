@@ -20,13 +20,14 @@ A production-ready 3-tier web application for tracking body measurements and com
 9. [API Reference](#api-reference)
 10. [Docker Images](#docker-images)
 11. [Kubernetes Infrastructure](#kubernetes-infrastructure)
-12. [First-Time Cluster Setup](#first-time-cluster-setup)
-13. [Deploy](#deploy)
-14. [Update the Application](#update-the-application)
-15. [Rollback](#rollback)
-16. [Operational Runbook](#operational-runbook)
-17. [Security](#security)
-18. [Design Decisions](#design-decisions)
+12. [Cluster Provisioning — `create_cluster.sh`](#cluster-provisioning--create_clustersh)
+13. [GitOps Deployment — ArgoCD ✅ Active](#gitops-deployment--argocd--active)
+14. [Legacy kubectl Deployment — `k8s/`](#legacy-kubectl-deployment--k8s)
+15. [Update the Application](#update-the-application)
+16. [Rollback](#rollback)
+17. [Operational Runbook](#operational-runbook)
+18. [Security](#security)
+19. [Design Decisions](#design-decisions)
 
 ---
 
@@ -119,30 +120,42 @@ The browser never communicates directly with the backend. Nginx receives all tra
 ├── database/
 │   └── setup-database.sh           # Bare-metal PostgreSQL bootstrap script
 │
-└── k8s/                            # All Kubernetes & deployment automation
-    ├── README.md                   # This file
-    ├── DEPLOYMENT.md               # Concise step-by-step deployment reference
+├── docs/
+│   └── docker-and-kubernetes.md    # Conceptual guide: Docker + K8s explained with this project
+│
+├── DockerKubernetes.png            # Architecture diagram (docker + k8s overview)
+├── Flow-Diagram-02.png             # GitOps delivery flow diagram
+│
+├── create_cluster.sh               # ✅ Automated EC2 cluster provisioning (kubeadm)
+│                                   #    Provisions control-plane + worker-1 via AWS CLI + SSM
+│
+├── k8s-argocd/                     # ✅ ACTIVE — GitOps delivery system (ArgoCD)
+│   ├── bootstrap.sh                # One-time: installs ArgoCD, applies secrets, triggers first sync
+│   ├── build-and-push.sh           # Day-to-day: build → ECR → patch manifests → git push
+│   ├── setup-ecr-secret.sh         # Refresh ECR pull secret manually
+│   ├── deployment-manually.md      # Step-by-step manual equivalent of bootstrap.sh
+│   ├── argocd/
+│   │   ├── namespace.yaml          # argocd namespace
+│   │   └── application.yaml        # ArgoCD Application resource (GitOps config)
+│   ├── app/                        # Everything ArgoCD manages — single source of truth
+│   │   ├── namespace.yaml
+│   │   ├── postgres/               # secret, pv, pvc, statefulset (wave 1), migration job (wave 2)
+│   │   ├── backend/                # configmap, secret, deployment (wave 3), service
+│   │   └── frontend/               # deployment (wave 4), service
+│   └── infra/
+│       └── ecr-secret-refresher.yaml  # CronJob: refreshes ecr-credentials every 6h
+│
+└── k8s/                            # Legacy — original kubectl-based deployment
+    ├── README.md
+    ├── DEPLOYMENT.md
     ├── namespace.yaml
     ├── build-and-push.sh           # LOCAL: build → ECR → commit
-    ├── deploy.sh                   # CLUSTER: full ordered deployment
-    ├── setup-ecr-secret.sh         # CLUSTER: create/refresh ECR pull secret
-    ├── setup-ecr-on-nodes.sh       # CLUSTER: install kubelet credential provider
-    ├── postgres/
-    │   ├── secret.yaml             # ⚠ GITIGNORED — apply manually
-    │   ├── pv.yaml                 # hostPath PV on worker-1
-    │   ├── pvc.yaml
-    │   ├── statefulset.yaml        # postgres:14, pinned to worker-1
-    │   ├── service.yaml            # ClusterIP: bmi-postgres-svc:5432
-    │   ├── migrations-configmap.yaml
-    │   └── migration-job.yaml      # One-shot K8s Job
-    ├── backend/
-    │   ├── secret.yaml             # ⚠ GITIGNORED — apply manually
-    │   ├── configmap.yaml          # NODE_ENV, PORT, FRONTEND_URL
-    │   ├── deployment.yaml         # 2 replicas, liveness + readiness probes
-    │   └── service.yaml            # ClusterIP: bmi-backend-svc:3000
-    └── frontend/
-        ├── deployment.yaml         # 2 replicas, liveness + readiness probes
-        └── service.yaml            # NodePort :30080
+    ├── deploy.sh                   # CLUSTER: ordered kubectl apply
+    ├── setup-ecr-secret.sh
+    ├── setup-ecr-on-nodes.sh
+    ├── postgres/                   # secret, pv, pvc, statefulset, service, migrations
+    ├── backend/                    # secret, configmap, deployment, service
+    └── frontend/                   # deployment, service
 ```
 
 ---
@@ -162,10 +175,12 @@ The browser never communicates directly with the backend. Nginx receives all tra
 | Backend | dotenv | 16.0.0 | Environment config |
 | Database | PostgreSQL | 14 | Relational data store |
 | Container runtime | Docker (containerd) | 18-alpine base | Image builds |
-| Orchestration | Kubernetes (kubeadm) | — | Cluster management |
+| Orchestration | Kubernetes (kubeadm) | v1.28 | Cluster management |
+| GitOps controller | ArgoCD | stable | Continuous delivery, drift correction |
 | CNI | Calico | — | Pod networking |
 | Registry | AWS ECR | ap-south-1 | Image storage |
 | Cloud | AWS EC2 | Ubuntu | Infrastructure |
+| Cluster provisioner | create_cluster.sh | — | Automated kubeadm setup via AWS CLI + SSM |
 
 ---
 
@@ -490,9 +505,95 @@ The ECR token is valid for **12 hours**. It is **never committed to git**.
 
 ---
 
-## First-Time Cluster Setup
+## Cluster Provisioning — `create_cluster.sh`
 
-Perform these steps once on a fresh cluster. After this, use the [Deploy](#deploy) section for all subsequent deployments.
+Spins up a fresh 2-node kubeadm cluster on AWS EC2 (control-plane + worker-1) automatically. Run once from your local machine:
+
+```bash
+bash create_cluster.sh
+```
+
+**What it does:**
+- Creates two EC2 instances (Ubuntu) with the required IAM instance profile
+- Bootstraps the control-plane via user-data (kubeadm init, Calico CNI)
+- Waits for the control-plane to be ready, then deletes any stale node objects from the AMI's etcd
+- Joins worker-1 via SSM (no SSH key needed)
+- Verifies both nodes are `Ready` using a heartbeat-based jq check
+
+Once both nodes show `Ready`, proceed to the GitOps bootstrap below.
+
+---
+
+## GitOps Deployment — ArgoCD ✅ Active
+
+This is the **active deployment path**. ArgoCD continuously reconciles the cluster state with the `k8s-argocd/app/` directory on the `main` branch — every `git push` is a deployment.
+
+### One-time bootstrap (run once on control-plane after cluster provisioning)
+
+```bash
+git clone https://github.com/sarowar-alam/kubernetes-3tier-app
+cd kubernetes-3tier-app
+bash k8s-argocd/bootstrap.sh
+```
+
+**What `bootstrap.sh` does, step by step:**
+
+| Step | Action |
+|---|---|
+| 0 | Installs AWS CLI if missing |
+| 1 | Creates `argocd` and `bmi-app` namespaces |
+| 2 | Applies gitignored secrets (`postgres-secret`, `backend-secret`) |
+| 3 | Creates the PostgreSQL PersistentVolume (cluster-scoped) |
+| 4 | Creates `/data/postgres` on worker-1 via a temporary busybox pod |
+| 4.5 | Creates the `ecr-credentials` imagePullSecret |
+| 5 | Installs ArgoCD from the official stable manifest |
+| 6 | Exposes ArgoCD UI on NodePort **30081** |
+| 7 | Creates the ArgoCD Application + forces an immediate sync |
+| 8 | Prints a live verification summary |
+
+At the end the script prints the ArgoCD UI URL, admin password, and the live app URL.
+
+> Full details and manual step-by-step equivalent: [k8s-argocd/README.md](k8s-argocd/README.md) and [k8s-argocd/deployment-manually.md](k8s-argocd/deployment-manually.md)
+
+### Sync waves — deployment ordering
+
+| Wave | Resource | Why |
+|---|---|---|
+| 0 | Services, ConfigMaps, PV, PVC | No dependencies |
+| 1 | PostgreSQL StatefulSet | Must be healthy before migrations |
+| 2 | Migration Job (Sync hook) | Runs SQL against ready postgres |
+| 3 | Backend Deployment (×2) | Schema must exist |
+| 4 | Frontend Deployment (×2) | Backend service DNS must exist |
+
+### Day-to-day: deploy a code change (run on your local machine)
+
+```bash
+bash k8s-argocd/build-and-push.sh
+```
+
+This builds images, tags with git SHA, pushes to ECR, patches deployment YAMLs, and commits + pushes to `main`. ArgoCD detects the diff and rolls out within ~3 minutes automatically.
+
+### ECR token refresh
+
+The `ecr-credentials` secret is automatically refreshed every 6 hours by an in-cluster CronJob (`k8s-argocd/infra/ecr-secret-refresher.yaml`). To apply it:
+
+```bash
+kubectl apply -f k8s-argocd/infra/ecr-secret-refresher.yaml
+```
+
+For an emergency manual refresh:
+
+```bash
+bash k8s-argocd/setup-ecr-secret.sh
+```
+
+---
+
+## Legacy kubectl Deployment — `k8s/`
+
+> **Note:** The `k8s/` directory contains the original manual kubectl workflow. It is preserved for reference and for environments without ArgoCD. The **active deployment path is `k8s-argocd/`** above.
+
+Perform these steps once on a fresh cluster. After this, use `bash k8s/deploy.sh` for all subsequent deployments.
 
 ### Step 1 — Create and attach an IAM role to both EC2 instances
 
@@ -639,9 +740,7 @@ Expected output:
 
 ---
 
-## Deploy
-
-After first-time setup, use this sequence for all subsequent full deployments (e.g. after tearing down and rebuilding the cluster):
+### Re-deploy (legacy kubectl)
 
 ```bash
 # On control-plane
