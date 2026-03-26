@@ -203,19 +203,30 @@ The cluster nodes need permission to pull images from ECR without static credent
 
 ### 6.2 Create PostgreSQL data directory on worker-1
 
-`bootstrap.sh` handles this automatically via SSM. If you need to do it manually:
+`bootstrap.sh` handles this automatically using a temporary `busybox` pod pinned to `k8s-worker-1`. No SSH or extra IAM permissions needed.
+
+If you need to do it manually:
 
 ```bash
-# Get the worker-1 instance ID
-aws ec2 describe-instances \
-  --filters "Name=tag:Name,Values=k8s-worker-1" \
-  --query 'Reservations[0].Instances[0].InstanceId' --output text
+kubectl run mkdir-postgres -n bmi-app --restart=Never \
+  --image=busybox \
+  --overrides='{
+    "spec": {
+      "nodeSelector": {"kubernetes.io/hostname": "k8s-worker-1"},
+      "containers": [{
+        "name": "mkdir-postgres",
+        "image": "busybox",
+        "command": ["sh", "-c", "mkdir -p /host/postgres && chmod 777 /host/postgres && echo DONE"],
+        "volumeMounts": [{"name": "host-data", "mountPath": "/host"}],
+        "securityContext": {"runAsUser": 0}
+      }],
+      "volumes": [{"name": "host-data", "hostPath": {"path": "/data"}}]
+    }
+  }'
 
-# Run via SSM (no SSH keys required)
-aws ssm start-session --target <instance-id>
-# Then:
-sudo mkdir -p /data/postgres && sudo chmod 777 /data/postgres
-exit
+kubectl wait pod/mkdir-postgres -n bmi-app --for=jsonpath='{.status.phase}'=Succeeded --timeout=60s
+kubectl logs mkdir-postgres -n bmi-app   # should print: DONE
+kubectl delete pod mkdir-postgres -n bmi-app
 ```
 
 ### 6.3 Create ECR repositories (if not already created)
