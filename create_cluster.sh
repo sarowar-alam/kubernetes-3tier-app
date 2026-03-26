@@ -369,9 +369,10 @@ verify_cluster_via_ssm() {
       --query       'StandardOutputContent' \
       --output      text 2>/dev/null || true)
 
-    # Count lines that contain " Ready "
+    # Count Ready nodes whose AGE is NOT in days (e.g. "32d") — filters out
+    # stale node objects baked into the AMI etcd that would give a false positive.
     local ready_count
-    ready_count=$(echo "${output}" | grep -c ' Ready ' || true)
+    ready_count=$(echo "${output}" | grep ' Ready ' | grep -cvE '[[:space:]][0-9]+d[[:space:]]' || true)
 
     log "  Attempt ${attempt}/${max_attempts}: ${ready_count}/${expected_count} node(s) Ready"
 
@@ -460,6 +461,21 @@ kubeadm reset -f 2>/dev/null || true
 rm -rf /etc/cni/net.d /etc/kubernetes
 iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
 echo "Reset complete."
+
+# Wait for containerd socket to accept connections (may lag on first AMI boot)
+echo "Waiting for containerd to be ready..."
+for i in \$(seq 1 60); do
+  if systemctl is-active --quiet containerd && crictl info >/dev/null 2>&1; then
+    echo "containerd is ready."
+    break
+  fi
+  if [ "\$i" -eq 60 ]; then
+    echo "ERROR: containerd never became ready after 5 minutes. Check: systemctl status containerd"
+    exit 1
+  fi
+  echo "Attempt \$i/60 — containerd not ready yet, waiting 5s..."
+  sleep 5
+done
 
 # Wait for the Kubernetes API server to be reachable before joining
 echo "Waiting for Kubernetes API at ${K8S_API_ENDPOINT}..."
