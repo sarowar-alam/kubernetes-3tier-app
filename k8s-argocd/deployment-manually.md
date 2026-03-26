@@ -242,8 +242,7 @@ echo "App URL: http://${PUBLIC_IP}:30080"
 
 ```bash
 kubectl get secret argocd-initial-admin-secret -n argocd \
-  -o jsonpath="{.data.password}" | base64 -d
-echo ""
+  -o jsonpath="{.data.password}" | base64 -d && echo
 ```
 
 Login: **Username:** `admin` | **Password:** output from above command
