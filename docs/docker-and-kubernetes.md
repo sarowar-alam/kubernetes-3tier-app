@@ -223,3 +223,12 @@ Each deployment is **reproducible and traceable** — the git SHA tag links ever
 
 **Docker** solves *"how do I package my app?"*  
 **Kubernetes** solves *"how do I run it reliably at scale?"*
+
+---
+
+## 🧑‍💻 Author
+
+*Md. Sarowar Alam*  
+Lead DevOps Engineer, Hogarth Worldwide  
+📧 Email: sarowar@hotmail.com  
+🔗 LinkedIn: https://www.linkedin.com/in/sarowar/

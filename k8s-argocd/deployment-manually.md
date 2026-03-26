@@ -285,3 +285,12 @@ kubectl annotate application bmi-health-tracker -n argocd \
 kubectl annotate application bmi-health-tracker -n argocd \
   argocd.argoproj.io/refresh=hard --overwrite
 ```
+
+---
+
+## 🧑‍💻 Author
+
+*Md. Sarowar Alam*  
+Lead DevOps Engineer, Hogarth Worldwide  
+📧 Email: sarowar@hotmail.com  
+🔗 LinkedIn: https://www.linkedin.com/in/sarowar/
