@@ -91,18 +91,23 @@ echo ""
 echo "[1/8] Creating namespaces..."
 kubectl apply -f k8s-argocd/argocd/namespace.yaml
 kubectl apply -f k8s-argocd/app/namespace.yaml
+kubectl get ns "${NAMESPACE_ARGOCD}" "${NAMESPACE_APP}" --no-headers 2>/dev/null | \
+  awk '{print "  \u2705  namespace/" $1}'
 echo ""
 
 # 2. Apply gitignored secrets (one-time, manual step)
 echo "[2/8] Applying secrets (gitignored — must exist locally)..."
 kubectl apply -f k8s-argocd/app/postgres/secret.yaml
 kubectl apply -f k8s-argocd/app/backend/secret.yaml
-echo "      Secrets applied."
+kubectl get secret postgres-secret backend-secret -n "${NAMESPACE_APP}" --no-headers 2>/dev/null | \
+  awk '{print "  \u2705  secret/" $1 " (" $2 ")" }'
 echo ""
 
 # 3. Create PersistentVolume (cluster-scoped, not namespace-scoped)
 echo "[3/8] Creating PersistentVolume..."
 kubectl apply -f k8s-argocd/app/postgres/pv.yaml
+PV_STATUS=$(kubectl get pv postgres-pv --no-headers 2>/dev/null | awk '{print $5}')
+echo "  \u2705  postgres-pv status: ${PV_STATUS}"
 echo ""
 
 # 4. Create worker-1 data directory via a temporary pod (no SSH or IAM required)
@@ -143,8 +148,9 @@ kubectl run mkdir-postgres -n "${NAMESPACE_APP}" --restart=Never \
   }' 2>/dev/null || true
 
 kubectl wait pod/mkdir-postgres -n "${NAMESPACE_APP}" \
-  --for=jsonpath='{.status.phase}'=Succeeded --timeout=60s 2>/dev/null \
-  && echo "      /data/postgres created on k8s-worker-1." \
+  --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s 2>/dev/null \
+  && { echo "      /data/postgres created on k8s-worker-1."; \
+       echo "      Pod log:"; kubectl logs mkdir-postgres -n "${NAMESPACE_APP}" 2>/dev/null | sed 's/^/        /'; } \
   || echo "      ⚠️  Pod did not complete — check: kubectl logs mkdir-postgres -n ${NAMESPACE_APP}"
 kubectl delete pod mkdir-postgres -n "${NAMESPACE_APP}" --ignore-not-found 2>/dev/null
 echo ""
@@ -152,6 +158,8 @@ echo ""
 # 4.5 Create the ECR pull secret (required before pods can pull images from ECR)
 echo "[4.5/8] Creating ECR pull secret 'ecr-credentials'..."
 bash k8s-argocd/setup-ecr-secret.sh
+ECR_TYPE=$(kubectl get secret ecr-credentials -n "${NAMESPACE_APP}" --no-headers 2>/dev/null | awk '{print $3}')
+echo "  \u2705  ecr-credentials type: ${ECR_TYPE}"
 echo ""
 
 # 5. Install ArgoCD (--server-side --force-conflicts handles both fresh installs
@@ -163,6 +171,8 @@ kubectl apply -n "${NAMESPACE_ARGOCD}" --server-side --force-conflicts \
 echo "      Waiting for ArgoCD server to be ready (up to 3 minutes)..."
 kubectl rollout status deployment/argocd-server \
   -n "${NAMESPACE_ARGOCD}" --timeout=180s
+RUNNING=$(kubectl get pods -n "${NAMESPACE_ARGOCD}" --no-headers 2>/dev/null | grep -c Running || true)
+echo "  \u2705  ${RUNNING}/7 ArgoCD pods Running"
 echo ""
 
 # 6. Expose ArgoCD UI via NodePort (no ingress required)
@@ -171,12 +181,17 @@ kubectl patch svc argocd-server -n "${NAMESPACE_ARGOCD}" \
   -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":8080,"nodePort":30081}]}}'
 
 ARGOCD_PORT=30081
+PORTS=$(kubectl get svc argocd-server -n "${NAMESPACE_ARGOCD}" --no-headers 2>/dev/null | awk '{print $5}')
+echo "  \u2705  argocd-server ports: ${PORTS}"
 echo "      ArgoCD UI available at: http://${PUBLIC_IP}:${ARGOCD_PORT}"
 echo ""
 
 # 7. Register the ArgoCD Application — starts automated GitOps sync
 echo "[7/8] Creating ArgoCD Application (triggers first sync)..."
 kubectl apply -f k8s-argocd/argocd/application.yaml
+kubectl annotate application bmi-health-tracker -n "${NAMESPACE_ARGOCD}" \
+  argocd.argoproj.io/refresh=hard --overwrite 2>/dev/null || true
+echo "      Force sync annotation applied."
 echo ""
 
 # 8. Final summary of what was applied
@@ -184,18 +199,18 @@ echo "[8/8] Verifying applied resources..."
 echo "  Namespaces  : $(kubectl get ns ${NAMESPACE_APP} ${NAMESPACE_ARGOCD} --no-headers 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
 echo "  Secrets     : $(kubectl get secret postgres-secret backend-secret ecr-credentials -n ${NAMESPACE_APP} --no-headers 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
 echo "  PV          : $(kubectl get pv postgres-pv --no-headers 2>/dev/null | awk '{print $1" ("$5")"}')"
+echo "  PVC         : $(kubectl get pvc postgres-pvc -n ${NAMESPACE_APP} --no-headers 2>/dev/null | awk '{print $1" ("$2")"}')" 
 echo "  ArgoCD app  : $(kubectl get application bmi-health-tracker -n ${NAMESPACE_ARGOCD} --no-headers 2>/dev/null | awk '{print $1" sync="$2" health="$3}')"
-
-ARGOCD_PASSWORD=$(kubectl get secret argocd-initial-admin-secret \
-  -n "${NAMESPACE_ARGOCD}" \
-  -o jsonpath="{.data.password}" | base64 -d)
-
+echo "  Services    : $(kubectl get svc -n ${NAMESPACE_APP} --no-headers 2>/dev/null | awk '{print $1"("$2")"}'  | tr '\n' ' ')"
+echo "  Pods        : $(kubectl get pods -n ${NAMESPACE_APP} --no-headers 2>/dev/null | awk '{print $1"("$3")"}'  | tr '\n' ' ')"
 echo "================================================"
 echo " Bootstrap complete!"
 echo ""
 echo "  ArgoCD UI : http://${PUBLIC_IP}:${ARGOCD_PORT}"
 echo "  Username  : admin"
 echo "  Password  : ${ARGOCD_PASSWORD}"
+echo ""
+echo "  App URL   : http://${PUBLIC_IP}:30080"
 echo ""
 echo "  ArgoCD is now watching: k8s-argocd/app/ on branch main"
 echo "  Every git push will trigger an automatic sync."
