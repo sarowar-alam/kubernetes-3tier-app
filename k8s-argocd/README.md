@@ -180,7 +180,7 @@ kubectl get nodes   # should show both nodes
 
 | Tool | Install command |
 |---|---|
-| AWS CLI | `curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/a.zip && unzip -q /tmp/a.zip -d /tmp && sudo /tmp/aws/install` |
+| AWS CLI | `apt install unzip -y && curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/a.zip && unzip -q /tmp/a.zip -d /tmp && sudo /tmp/aws/install` |
 | kubectl | pre-installed (it's the control-plane) |
 | git | `sudo apt-get install -y git` |
 
