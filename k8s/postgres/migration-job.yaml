@@ -10,9 +10,9 @@ spec:
     spec:
       restartPolicy: OnFailure
 
-      # Pin to worker-1 alongside the postgres pod
+      # Pin to k8s-lab-worker-1 alongside the postgres pod
       nodeSelector:
-        kubernetes.io/hostname: k8s-worker-1
+        kubernetes.io/hostname: k8s-lab-worker-1
 
       initContainers:
         # Wait until postgres is ready before running migrations

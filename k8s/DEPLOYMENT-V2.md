@@ -1,7 +1,7 @@
 # BMI Health Tracker — Complete Deployment Guide (V2)
 
 **Repo:** https://github.com/sarowar-alam/kubernetes-3tier-app  
-**App URL:** http://13.127.88.162:30080  
+**App URL:** http://13.127.210.35:30080  
 **Namespace:** `bmi-app`
 
 This document covers the **full deployment from zero** — AWS setup, Kubernetes cluster prerequisites, building and pushing images, and deploying all application tiers. Follow every step in order.
@@ -29,18 +29,19 @@ This document covers the **full deployment from zero** — AWS setup, Kubernetes
 ## 1. Infrastructure Overview
 
 ```
-Browser → http://13.127.88.162:30080  (NodePort on control-plane — public subnet)
+Browser → http://13.127.210.35:30080  (NodePort on control-plane — public subnet)
   └─ bmi-frontend-svc  → Nginx pod :80
        └─ /api/*  proxied  → bmi-backend-svc:3000
             └─ bmi-postgres-svc:5432  → PostgreSQL StatefulSet
 ```
 
-> **Network topology:** The control-plane is in a **public subnet** and is the external entry point. The worker node is in a **private subnet** — it has no public IP and is not directly reachable from the internet. Kubernetes NodePort is exposed on **all** cluster nodes, so the public IP of the control-plane serves external traffic on port 30080.
+> **Network topology:** The control-plane is in a **public subnet** and is the external entry point. The worker nodes are in a **private subnet** — they have no public IP and are not directly reachable from the internet. Kubernetes NodePort is exposed on **all** cluster nodes, so the public IP of the control-plane serves external traffic on port 30080.
 
 | Node | Private IP | Public IP | Subnet | Role |
 |---|---|---|---|---|
-| k8s-control-plane | 10.0.5.64 | 13.127.88.162 | Public | API server, scheduler, etcd, NodePort entry |
-| k8s-worker-1 | 10.0.130.111 | — (none) | Private | Runs all pods, PostgreSQL storage |
+| k8s-lab-master | 10.0.10.34 | 13.127.210.35 | Public | API server, scheduler, etcd, NodePort entry |
+| k8s-lab-worker-1 | 10.0.132.170 | — (none) | Private | Runs app pods, PostgreSQL storage |
+| k8s-lab-worker-2 | 10.0.141.21 | — (none) | Private | Runs app pods |
 
 | Resource | Value |
 |---|---|
@@ -85,7 +86,7 @@ Browser → http://13.127.88.162:30080  (NodePort on control-plane — public su
 
 ### 2.3 Attach the IAM Role to Both EC2 Instances
 
-Repeat for **both** `k8s-control-plane` and `k8s-worker-1`:
+Repeat for **all three nodes** — `k8s-lab-master`, `k8s-lab-worker-1`, and `k8s-lab-worker-2`:
 
 1. **AWS Console → EC2 → Instances** → select the instance
 2. **Actions → Security → Modify IAM role**
@@ -157,7 +158,7 @@ git --version   # must be installed
 SSH into the control-plane using its **public IP** (it is in the public subnet):
 
 ```bash
-ssh ubuntu@13.127.88.162
+ssh ubuntu@13.127.210.35
 ```
 
 ### 4.1 Install AWS CLI
@@ -183,17 +184,23 @@ cd kubernetes-3tier-app
 The worker node is in a **private subnet** — it has no public IP and cannot be reached directly from the internet. SSH to it by **jumping through the control-plane** (which is in the public subnet):
 
 ```bash
-ssh -J ubuntu@13.127.88.162 ubuntu@10.0.130.111
+# worker-1 (PostgreSQL node)
+ssh -J ubuntu@13.127.210.35 ubuntu@10.0.132.170
+
+# worker-2
+ssh -J ubuntu@13.127.210.35 ubuntu@10.0.141.21
 ```
 
 Alternatively, SSH to the control-plane first and then hop to the worker from there:
 
 ```bash
-ssh ubuntu@13.127.88.162          # step 1: land on control-plane
-ssh ubuntu@10.0.130.111           # step 2: hop to worker via private IP
+ssh ubuntu@13.127.210.35           # step 1: land on control-plane
+ssh ubuntu@10.0.132.170            # step 2: hop to worker-1 via private IP
+# or
+ssh ubuntu@10.0.141.21             # step 2: hop to worker-2 via private IP
 ```
 
-Once on the worker, create the PostgreSQL data directory. The PersistentVolume uses `hostPath: /data/postgres` — this directory must exist before the PostgreSQL pod starts.
+Once on **k8s-lab-worker-1**, create the PostgreSQL data directory. The PersistentVolume uses `hostPath: /data/postgres` on this specific node — this directory must exist before the PostgreSQL pod starts.
 
 ```bash
 sudo mkdir -p /data/postgres
@@ -201,13 +208,15 @@ sudo chmod 777 /data/postgres
 exit
 ```
 
+> You do **not** need to create this directory on k8s-lab-worker-2 — postgres is pinned to k8s-lab-worker-1 only.
+
 > The PersistentVolume uses `persistentVolumeReclaimPolicy: Retain`, so data survives pod deletions and redeployments.
 
 ---
 
 ## 6. Clone Repo and Prepare Secrets
 
-Back on the control-plane (`ssh ubuntu@13.127.88.162`):
+Back on the control-plane (`ssh ubuntu@13.127.210.35`):
 
 ### 6.1 Apply the Namespace First
 
@@ -282,7 +291,7 @@ kubectl apply -f k8s/backend/secret.yaml
 
 ## 7. Build and Push Docker Images — Manual Steps
 
-Run all commands below from the **repo root directory**. This can be your **local Windows machine** or the **Ubuntu control-plane** (`ssh ubuntu@13.127.88.162`) — Docker must be installed wherever you run this.
+Run all commands below from the **repo root directory**. This can be your **local Windows machine** or the **Ubuntu control-plane** (`ssh ubuntu@13.127.210.35`) — Docker must be installed wherever you run this.
 
 > **Important:** The build commands use `./backend` and `./frontend` as the Docker build context. These paths only resolve correctly when you are in the repo root. Running from any other directory (e.g. inside `k8s/`) will cause `docker build` to fail with _"unable to prepare context"_.
 
@@ -527,9 +536,11 @@ git push
 
 ## 8. Deploy to Kubernetes — `deploy.sh`
 
-Run this on the **Ubuntu control-plane node** (`ssh ubuntu@13.127.88.162`) after **Section 7** has completed.
+Run this on the **Ubuntu control-plane node** (`ssh ubuntu@13.127.210.35`) after **Section 7** has completed.
 
 > All commands in this section are **bash only** — they run on the Ubuntu control-plane server.
+
+> **Note:** Your cluster has 2 worker nodes (`k8s-lab-worker-1` and `k8s-lab-worker-2`). The backend and frontend deployments (2 replicas each) will spread across both workers automatically. PostgreSQL is pinned to `k8s-lab-worker-1` via `nodeSelector`.
 
 ```bash
 cd kubernetes-3tier-app
@@ -680,7 +691,7 @@ The script prints current pod status and the app URL:
 
 ```bash
 kubectl get pods -n bmi-app
-# ✅ App is live at: http://13.127.88.162:30080
+# ✅ App is live at: http://13.127.210.35:30080
 ```
 
 ---
@@ -724,7 +735,7 @@ bmi-migrations-xxxxx            0/1     Completed   0          60s
 postgres-0                      1/1     Running     0          90s
 
 ================================================
- ✅ App is live at: http://13.127.88.162:30080
+ ✅ App is live at: http://13.127.210.35:30080
 ================================================
 ```
 
@@ -760,7 +771,6 @@ bmi-postgres-svc   ClusterIP   10.x.x.x     <none>        5432/TCP       ...
 ### 9.3 Health Check
 
 ```bash
-curl http://10.0.130.111:3000/health       # from inside the cluster only
 kubectl exec -n bmi-app deploy/bmi-backend -- wget -qO- http://localhost:3000/health
 ```
 
@@ -769,7 +779,7 @@ Expected response: `{"status":"ok"}` or `OK`
 ### 9.4 Open in Browser
 
 ```
-http://13.127.88.162:30080
+http://13.127.210.35:30080
 ```
 
 ---
@@ -868,10 +878,14 @@ kubectl wait --for=condition=complete job/bmi-migrations -n bmi-app --timeout=90
 
 | Item | Value |
 |---|---|
-| App URL | http://13.127.88.162:30080 |
-| Control-plane public IP (SSH + NodePort entry) | 13.127.88.162 |
-| Control-plane private IP | 10.0.5.64 |
-| Worker node private IP (private subnet, no public IP) | 10.0.130.111 |
+| App URL | http://13.127.210.35:30080 |
+| Control-plane node name | k8s-lab-master |
+| Control-plane public IP (SSH + NodePort entry) | 13.127.210.35 |
+| Control-plane private IP | 10.0.10.34 |
+| Worker-1 node name (PostgreSQL node) | k8s-lab-worker-1 |
+| Worker-1 private IP (private subnet, no public IP) | 10.0.132.170 |
+| Worker-2 node name | k8s-lab-worker-2 |
+| Worker-2 private IP (private subnet, no public IP) | 10.0.141.21 |
 | ECR registry | `388779989543.dkr.ecr.ap-south-1.amazonaws.com` |
 | ECR repos | `bmi-backend`, `bmi-frontend` |
 | Kubernetes namespace | `bmi-app` |
