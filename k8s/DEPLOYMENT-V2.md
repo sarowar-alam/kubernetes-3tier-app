@@ -280,114 +280,256 @@ kubectl apply -f k8s/backend/secret.yaml
 
 ---
 
-## 7. Build and Push Docker Images — `build-and-push.sh`
+## 7. Build and Push Docker Images — Manual Steps
 
-Run this on your **local machine** from the repo root every time you change application code.
+Run all commands below from the **repo root directory**. This can be your **local Windows machine** or the **Ubuntu control-plane** (`ssh ubuntu@13.127.88.162`) — Docker must be installed wherever you run this.
 
+> **Important:** The build commands use `./backend` and `./frontend` as the Docker build context. These paths only resolve correctly when you are in the repo root. Running from any other directory (e.g. inside `k8s/`) will cause `docker build` to fail with _"unable to prepare context"_.
+
+**Navigate to the repo root first:**
+
+**Ubuntu / macOS / Linux / Git Bash:**
 ```bash
-bash k8s/build-and-push.sh
+cd ~/kubernetes-3tier-app
+pwd
+# Expected: /home/ubuntu/kubernetes-3tier-app
 ```
 
-### What the script does — step by step
+**PowerShell (Windows):**
+```powershell
+cd C:\path\to\kubernetes-3tier-app
+Get-Location
+# Expected: C:\path\to\kubernetes-3tier-app
+```
 
-**[1/5] ECR Login**
+> **Shell guide for this section:**
+> - **Ubuntu / macOS / Linux / Git Bash** — use the bash code blocks (works on the Ubuntu control-plane or any Linux/macOS terminal)
+> - **PowerShell** — use the PowerShell code blocks (Windows only)
 
+> **You can also run the whole section in one command (bash only, from repo root):**  
+> `bash k8s/build-and-push.sh`  
+> The manual steps below are the exact equivalent — use them when you want full control or need to re-run a single step.
+
+---
+
+### Step 7.0 — Set shared variables
+
+These variables are used in every command below. Set them once in your terminal session.
+
+**Ubuntu / macOS / Linux / Git Bash:**
+```bash
+export AWS_PROFILE="sarowar-ostad"
+export ECR_BASE="388779989543.dkr.ecr.ap-south-1.amazonaws.com"
+export TAG=$(git rev-parse --short HEAD)
+echo "Image tag will be: ${TAG}"
+```
+
+**PowerShell:**
+```powershell
+$env:AWS_PROFILE = "sarowar-ostad"
+$ECR_BASE = "388779989543.dkr.ecr.ap-south-1.amazonaws.com"
+$TAG = git rev-parse --short HEAD
+Write-Host "Image tag will be: $TAG"
+```
+
+> `TAG` is the git short SHA of the current commit (e.g. `3fcc322`). Every build is traceable to a specific commit, and rollback is easy with `kubectl rollout undo`.
+
+---
+
+### Step 7.1 — Log in to ECR
+
+**Ubuntu / macOS / Linux / Git Bash:**
 ```bash
 aws ecr get-login-password --region ap-south-1 \
-  | docker login --username AWS --password-stdin \
-    388779989543.dkr.ecr.ap-south-1.amazonaws.com
+  | docker login --username AWS --password-stdin "${ECR_BASE}"
 ```
 
-Authenticates Docker to ECR using the `sarowar-ostad` AWS profile. The token is valid for 12 hours.
+**PowerShell:**
+```powershell
+aws ecr get-login-password --region ap-south-1 |
+  docker login --username AWS --password-stdin $ECR_BASE
+```
+
+Expected output:
+```
+Login Succeeded
+```
+
+> The ECR token is valid for **12 hours**. If you get `no basic auth credentials` when pushing, re-run this step.
 
 ---
 
-**[2/5] Build Docker Images**
+### Step 7.2 — Build the backend Docker image
 
+**Ubuntu / macOS / Linux / Git Bash:**
 ```bash
-docker build -t bmi-backend:<SHA>  ./backend
-docker build -t bmi-frontend:<SHA> ./frontend
+docker build -t "bmi-backend:${TAG}" ./backend
 ```
 
-- Backend: multi-stage Node.js 18 Alpine build, runs as non-root user `appuser`
-- Frontend: multi-stage Vite build → served by Nginx 1.25 Alpine
-
-`<SHA>` is the current git short commit hash (e.g. `3fcc322`). If not in a git repo, falls back to a timestamp.
-
----
-
-**[3/5] Tag Images**
-
-Each image gets **two tags**:
-
-| Tag | Purpose |
-|---|---|
-| `<ECR>/<repo>:<SHA>` | Immutable — identifies the exact commit, used in Kubernetes manifests |
-| `<ECR>/<repo>:latest` | Convenience — always points to the most recent push |
-
----
-
-**[4/5] Push to ECR**
-
-All four tags (2 images × 2 tags) are pushed:
-
+**PowerShell:**
+```powershell
+docker build -t "bmi-backend:$TAG" ./backend
 ```
-388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-backend:<SHA>
-388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-backend:latest
-388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-frontend:<SHA>
-388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-frontend:latest
+
+- Multi-stage build: Node.js 18 Alpine installs dependencies, second stage copies output and runs as non-root user `appuser`
+- Exposes port `3000`, health check on `GET /health`
+
+Verify the image was built:
+```bash
+docker images bmi-backend
 ```
 
 ---
 
-**[5/5] Patch Deployment YAMLs + Git Commit**
+### Step 7.3 — Build the frontend Docker image
 
-The script updates the image field in both deployment manifests using `sed`:
-
-```
-k8s/backend/deployment.yaml  → image: <ECR>/bmi-backend:<SHA>
-k8s/frontend/deployment.yaml → image: <ECR>/bmi-frontend:<SHA>
+**Ubuntu / macOS / Linux / Git Bash:**
+```bash
+docker build -t "bmi-frontend:${TAG}" ./frontend
 ```
 
-It then runs:
+**PowerShell:**
+```powershell
+docker build -t "bmi-frontend:$TAG" ./frontend
+```
+
+- Multi-stage build: Node.js 18 Alpine runs `npm run build` (Vite), second stage copies `dist/` into Nginx 1.25 Alpine
+- Nginx proxies `/api/*` to `http://bmi-backend-svc:3000` (Kubernetes DNS)
+
+Verify the image was built:
+```bash
+docker images bmi-frontend
+```
+
+---
+
+### Step 7.4 — Tag both images for ECR
+
+Each image needs two tags: an immutable SHA tag (used in Kubernetes manifests) and `latest` (for convenience).
+
+**Ubuntu / macOS / Linux / Git Bash:**
+```bash
+docker tag "bmi-backend:${TAG}"  "${ECR_BASE}/bmi-backend:${TAG}"
+docker tag "bmi-backend:${TAG}"  "${ECR_BASE}/bmi-backend:latest"
+docker tag "bmi-frontend:${TAG}" "${ECR_BASE}/bmi-frontend:${TAG}"
+docker tag "bmi-frontend:${TAG}" "${ECR_BASE}/bmi-frontend:latest"
+```
+
+**PowerShell:**
+```powershell
+docker tag "bmi-backend:$TAG"  "$ECR_BASE/bmi-backend:$TAG"
+docker tag "bmi-backend:$TAG"  "$ECR_BASE/bmi-backend:latest"
+docker tag "bmi-frontend:$TAG" "$ECR_BASE/bmi-frontend:$TAG"
+docker tag "bmi-frontend:$TAG" "$ECR_BASE/bmi-frontend:latest"
+```
+
+After tagging, verify all 4 ECR-tagged images exist:
+
+**Ubuntu / macOS / Linux / Git Bash:**
+```bash
+docker images | grep "${ECR_BASE}"
+```
+
+**PowerShell:**
+```powershell
+docker images | Select-String $ECR_BASE
+```
+
+---
+
+### Step 7.5 — Push images to ECR
+
+Push all 4 tags (2 images × 2 tags):
+
+**Ubuntu / macOS / Linux / Git Bash:**
+```bash
+docker push "${ECR_BASE}/bmi-backend:${TAG}"
+docker push "${ECR_BASE}/bmi-backend:latest"
+docker push "${ECR_BASE}/bmi-frontend:${TAG}"
+docker push "${ECR_BASE}/bmi-frontend:latest"
+```
+
+**PowerShell:**
+```powershell
+docker push "$ECR_BASE/bmi-backend:$TAG"
+docker push "$ECR_BASE/bmi-backend:latest"
+docker push "$ECR_BASE/bmi-frontend:$TAG"
+docker push "$ECR_BASE/bmi-frontend:latest"
+```
+
+Each push prints digest + size per layer. The last line for each push looks like:
+```
+3fcc322: digest: sha256:abc123... size: 12345678
+```
+
+---
+
+### Step 7.6 — Update deployment manifests with the new image tag
+
+Patch the `image:` field in both Kubernetes deployment YAMLs to the new SHA tag:
+
+**Ubuntu / macOS / Linux / Git Bash:**
+```bash
+sed -i "s|image: .*bmi-backend:.*|image: ${ECR_BASE}/bmi-backend:${TAG}|g" \
+  k8s/backend/deployment.yaml
+
+sed -i "s|image: .*bmi-frontend:.*|image: ${ECR_BASE}/bmi-frontend:${TAG}|g" \
+  k8s/frontend/deployment.yaml
+```
+
+**PowerShell (Git Bash `sed` not available — use PowerShell replace):**
+```powershell
+(Get-Content k8s/backend/deployment.yaml) -replace 'image: .*bmi-backend:.*', "image: $ECR_BASE/bmi-backend:$TAG" |
+  Set-Content k8s/backend/deployment.yaml
+
+(Get-Content k8s/frontend/deployment.yaml) -replace 'image: .*bmi-frontend:.*', "image: $ECR_BASE/bmi-frontend:$TAG" |
+  Set-Content k8s/frontend/deployment.yaml
+```
+
+Verify the change:
+
+**Ubuntu / macOS / Linux / Git Bash:**
+```bash
+grep "image:" k8s/backend/deployment.yaml
+grep "image:" k8s/frontend/deployment.yaml
+```
+
+**PowerShell:**
+```powershell
+Select-String "image:" k8s/backend/deployment.yaml
+Select-String "image:" k8s/frontend/deployment.yaml
+```
+
+Expected (with your actual SHA):
+```
+image: 388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-backend:3fcc322
+image: 388779989543.dkr.ecr.ap-south-1.amazonaws.com/bmi-frontend:3fcc322
+```
+
+---
+
+### Step 7.7 — Commit and push the updated manifests to git
 
 ```bash
 git add k8s/backend/deployment.yaml k8s/frontend/deployment.yaml
-git commit -m "deploy: image tag <SHA> (<timestamp>)"
+git diff --staged    # confirm only the image tag line changed
+git commit -m "deploy: image tag ${TAG}"
 git push
 ```
 
-If the manifests already contain the same SHA (re-running without new commits), the `git diff --staged --quiet` check detects no change and skips the commit.
+> If you re-run step 7.6 with the same SHA (no new commits), `git diff --staged` will show no changes — skip the commit in that case.
 
 ---
 
-**Expected output on success:**
-
-```
-================================================
- BMI Health Tracker — Build & Push
- Image tag : 3fcc322
- Timestamp : 2026-04-13 10:00:00
- Registry  : 388779989543.dkr.ecr.ap-south-1.amazonaws.com
-================================================
-
-[1/5] Logging in to ECR...
-Login Succeeded
-[2/5] Building backend image...
-...
-[3/5] Tagging images...
-[4/5] Pushing backend to ECR...
-...
-[5/5] Updating deployment manifests...
-      Manifests committed and pushed to git.
-================================================
-```
+**All steps complete.** The new image tag is now in ECR and the deployment YAMLs in git reflect it. Proceed to **Section 8** to deploy to Kubernetes.
 
 ---
 
 ## 8. Deploy to Kubernetes — `deploy.sh`
 
-Run this on the **control-plane node** (public IP `13.127.88.162`) after `build-and-push.sh` has completed.
+Run this on the **Ubuntu control-plane node** (`ssh ubuntu@13.127.88.162`) after **Section 7** has completed.
+
+> All commands in this section are **bash only** — they run on the Ubuntu control-plane server.
 
 ```bash
 cd kubernetes-3tier-app
