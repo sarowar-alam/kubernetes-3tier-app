@@ -42,29 +42,29 @@ This directory (`k8s-argocd/`) is a **self-contained GitOps delivery system** fo
 ┌──────────────────────────────────────────────────────────────────┐
 │  Developer Machine                                               │
 │                                                                  │
-│  docker build + push → AWS ECR                                  │
-│  git commit + push   → GitHub (main branch)                     │
+│  docker build + push → AWS ECR                                   │
+│  git commit + push   → GitHub (main branch)                      │
 └────────────────────────────┬─────────────────────────────────────┘
                              │  ArgoCD polls every 3 minutes
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  Kubernetes Cluster — AWS EC2 (ap-south-1)                      │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Namespace: argocd                                        │   │
-│  │  ArgoCD Server — watches k8s-argocd/app/ on main branch  │   │
-│  └──────────────────────────────────────────────────────────┘   │
+│  Kubernetes Cluster — AWS EC2 (ap-south-1)                       │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │  Namespace: argocd                                       │    │
+│  │  ArgoCD Server — watches k8s-argocd/app/ on main branch  │    │
+│  └──────────────────────────────────────────────────────────┘    │
 │                             │ applies diffs automatically        │
 │                             ▼                                    │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Namespace: bmi-app                                       │   │
-│  │                                                           │   │
-│  │  ┌─────────────┐   ┌──────────────┐   ┌──────────────┐  │   │
-│  │  │  Frontend   │   │   Backend    │   │  PostgreSQL  │  │   │
-│  │  │  ×2 pods    │──▶│   ×2 pods   │──▶│  StatefulSet │  │   │
-│  │  │  Nginx+React│   │  Node.js API │   │  + 5Gi PV   │  │   │
-│  │  └────┬────────┘   └──────────────┘   └──────────────┘  │   │
-│  │       │ NodePort :30080                                   │   │
-│  └───────┼───────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │  Namespace: bmi-app                                      │    │
+│  │                                                          │    │
+│  │  ┌─────────────┐   ┌──────────────┐   ┌──────────────┐   │    │
+│  │  │  Frontend   │   │   Backend    │   │  PostgreSQL  │   │    │
+│  │  │  ×2 pods    │─▶│   ×2 pods    │──▶│  StatefulSet │   │    │
+│  │  │  Nginx+React│   │  Node.js API │   │  + 5Gi PV    │   │    │
+│  │  └────┬────────┘   └──────────────┘   └──────────────┘   │    │
+│  │       │ NodePort :30080                                  │    │
+│  └───────┼──────────────────────────────────────────────────┘    │
 └──────────┼───────────────────────────────────────────────────────┘
            │
            ▼  http://10.0.130.111:30080
