@@ -46,15 +46,49 @@ All prerequisites must be satisfied before starting either Part 1 or Part 2.
 | Docker Desktop | https://www.docker.com/products/docker-desktop/ | `docker --version` |
 | AWS CLI v2 | macOS: `brew install awscli` / Windows: `winget install Amazon.AWSCLI` | `aws --version` |
 | Git | https://git-scm.org | `git --version` |
-| AWS named profile `sarowar-ostad` | `aws configure --profile sarowar-ostad` | see below |
+| AWS credentials | Option A: named profile `sarowar-ostad` OR Option B: environment variables | see below |
 
-**Configure and verify the AWS profile:**
+**Choose ONE of the two options below. Both work with all commands in this guide.**
+
+#### Option A — Named Profile (recommended, persists across sessions)
+
 ```bash
 # Directory: anywhere on local machine
+# Run this once — stores credentials in ~/.aws/credentials under [sarowar-ostad]
 aws configure --profile sarowar-ostad
-# Enter: Access Key ID, Secret Access Key, region=ap-south-1, output=json
+# Prompts:
+#   AWS Access Key ID:     <your IAM user access key>
+#   AWS Secret Access Key: <your IAM user secret key>
+#   Default region name:   ap-south-1
+#   Default output format: json
+```
 
+All commands in this guide already include `--profile sarowar-ostad` or `export AWS_PROFILE="sarowar-ostad"` — nothing else to change.
+
+**Verify:**
+```bash
 aws sts get-caller-identity --profile sarowar-ostad
+# Expected: { "Account": "388779989543", "UserId": "...", "Arn": "..." }
+```
+
+#### Option B — Environment Variables (no profile needed, valid for current session only)
+
+Use this if you cannot or do not want to create a named profile. Export credentials directly:
+
+```bash
+# Directory: anywhere on local machine
+export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
+export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+export AWS_DEFAULT_REGION="ap-south-1"
+# These override any profile for the duration of the current terminal session
+# Replace the example values with your actual IAM user credentials
+```
+
+When using Option B, **remove** `--profile sarowar-ostad` and `export AWS_PROFILE=...` from any command in this guide — the environment variables take precedence automatically.
+
+**Verify:**
+```bash
+aws sts get-caller-identity
 # Expected: { "Account": "388779989543", "UserId": "...", "Arn": "..." }
 ```
 
@@ -414,8 +448,20 @@ Same as Phase 1.1 — see sections A, B, C above.
 ```bash
 cd kubernetes-3tier-app
 # Must be at repo root for build context paths to work
+```
 
+**Set variables — choose Option A or Option B:**
+
+```bash
+# Option A — Named profile (if you ran aws configure --profile sarowar-ostad)
 export AWS_PROFILE="sarowar-ostad"
+
+# Option B — Environment variables (if you did NOT create a named profile)
+# export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
+# export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# export AWS_DEFAULT_REGION="ap-south-1"
+# (uncomment Option B lines and comment out the Option A line above if using this)
+
 export ECR_BASE="388779989543.dkr.ecr.ap-south-1.amazonaws.com"
 export TAG=$(git rev-parse --short HEAD)
 # TAG = git short SHA of current commit (e.g. 9b8bf6f)
