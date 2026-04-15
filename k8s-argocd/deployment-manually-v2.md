@@ -7,22 +7,6 @@
 
 ---
 
-> ⚠️ **Manifest Cluster Values Need Updating Before First Deploy**
->
-> Several files in `k8s-argocd/` still reference the old cluster node name `k8s-worker-1`.
-> They must be updated to `k8s-lab-worker-1` before deploying:
->
-> | File | What to change |
-> |---|---|
-> | `app/postgres/statefulset.yaml` | `nodeSelector: kubernetes.io/hostname: k8s-worker-1` → `k8s-lab-worker-1` |
-> | `app/postgres/pv.yaml` | `nodeAffinity` value `k8s-worker-1` → `k8s-lab-worker-1` |
-> | `app/postgres/migration-job.yaml` | `nodeSelector: kubernetes.io/hostname: k8s-worker-1` → `k8s-lab-worker-1` |
-> | `infra/ecr-secret-refresher.yaml` | `nodeSelector: kubernetes.io/hostname: k8s-worker-1` → `k8s-lab-worker-1` |
-> | `app/backend/configmap.yaml` | `FRONTEND_URL: "http://10.0.130.111:30080"` → `"http://13.127.210.35:30080"` |
-> | `bootstrap.sh` | Busybox pod nodeSelector at step [4/8]: `k8s-worker-1` → `k8s-lab-worker-1` |
-
----
-
 ## How GitOps Works
 
 ArgoCD continuously watches the `k8s-argocd/app/` directory on the `main` branch of the GitHub repository. Every `git push` triggers an automatic deployment — no SSH to the cluster is needed after initial setup.
@@ -367,14 +351,12 @@ bash k8s-argocd/bootstrap.sh
 | [1/8] | `kubectl apply` — creates `argocd` and `bmi-app` namespaces |
 | [2/8] | `kubectl apply` — applies `app/postgres/secret.yaml` and `app/backend/secret.yaml` |
 | [3/8] | `kubectl apply` — creates `postgres-pv` (5Gi hostPath on k8s-lab-worker-1, Retain) |
-| [4/8] | Runs a busybox pod to create `/data/postgres` on worker-1 — see note below |
+| [4/8] | Runs a busybox pod to create `/data/postgres` on `k8s-lab-worker-1` — skipped safely if step A already created it via SSH |
 | [4.5/8] | Calls `setup-ecr-secret.sh` — creates `ecr-credentials` imagePullSecret using EC2 instance profile |
 | [5/8] | `kubectl apply` — installs ArgoCD from the official upstream manifest; waits for server Ready |
 | [6/8] | `kubectl patch` — exposes `argocd-server` as NodePort 30081 |
 | [7/8] | `kubectl apply` — applies `argocd/application.yaml`; forces first hard sync immediately |
 | [8/8] | Prints summary: ArgoCD URL, admin password, App URL |
-
-> ⚠️ **Step [4/8] note:** The busybox pod still uses the old nodeSelector `k8s-worker-1` in the script. With the new cluster this may warn or fail. This is safe to ignore — step A already created `/data/postgres` via SSH before running bootstrap.sh.
 
 **Expected output (final summary block):**
 ```

@@ -6,4 +6,4 @@ metadata:
 data:
   NODE_ENV:     "production"
   PORT:         "3000"
-  FRONTEND_URL: "http://10.0.130.111:30080"
+  FRONTEND_URL: "http://13.127.210.35:30080"
