@@ -305,6 +305,48 @@ kubectl get secret -n bmi-app
 # postgres-secret   Opaque                           3      10s
 ```
 
+### D. (Optional) Install ECR Credential Provider on All Nodes
+
+> **Background:** `k8s/setup-ecr-on-nodes.sh` configures the kubelet to authenticate ECR image pulls directly using the node's EC2 instance profile. Once installed, image pulls succeed without any `imagePullSecrets` and without the 12-hour token refresh cycle.
+>
+> **Current cluster approach:** `setup-ecr-secret.sh` (imagePullSecrets) — used by `deploy.sh` on every run. This section is optional; skip it if you are happy with the current approach. Both methods work in parallel if both are configured.
+
+> **Run this on ALL three nodes (master + both workers).**
+
+```bash
+# Directory: local machine — anywhere
+
+# Copy the script to each node:
+scp k8s/setup-ecr-on-nodes.sh ubuntu@13.127.210.35:~/
+
+ssh -J ubuntu@13.127.210.35 ubuntu@10.0.132.170 \
+  "cat > ~/setup-ecr-on-nodes.sh" < k8s/setup-ecr-on-nodes.sh
+
+ssh -J ubuntu@13.127.210.35 ubuntu@10.0.141.21 \
+  "cat > ~/setup-ecr-on-nodes.sh" < k8s/setup-ecr-on-nodes.sh
+
+# Run on k8s-lab-master:
+ssh ubuntu@13.127.210.35 "sudo bash ~/setup-ecr-on-nodes.sh"
+
+# Run on k8s-lab-worker-1:
+ssh -J ubuntu@13.127.210.35 ubuntu@10.0.132.170 "sudo bash ~/setup-ecr-on-nodes.sh"
+
+# Run on k8s-lab-worker-2:
+ssh -J ubuntu@13.127.210.35 ubuntu@10.0.141.21 "sudo bash ~/setup-ecr-on-nodes.sh"
+```
+
+> The script installs the `ecr-credential-provider` binary, writes the kubelet `CredentialProviderConfig`, and patches `/var/lib/kubelet/kubeadm-flags.env` to enable it. Kubelet restarts automatically.
+
+**Verify:**
+```bash
+# Directory: k8s-lab-master — ~
+# Confirm all nodes are still Ready after kubelet restart:
+kubectl get nodes
+# Expected: all 3 nodes  STATUS=Ready
+```
+
+> **If you complete this step:** You may remove `imagePullSecrets: [{name: ecr-credentials}]` from `k8s/backend/deployment.yaml` and `k8s/frontend/deployment.yaml` and stop calling `setup-ecr-secret.sh`. The existing manifests continue to work even with both configured.
+
 ---
 
 ## Phase 1.2 — Build and Push Images
@@ -437,7 +479,7 @@ Every command that the scripts execute, broken down individually with explanatio
 
 ## Phase 2.1 — One-Time Cluster Setup
 
-Same as Phase 1.1 — see sections A, B, C above.
+Same as Phase 1.1 — see sections A, B, C above (and optionally D for the permanent ECR credential provider).
 
 ---
 
@@ -692,6 +734,8 @@ kubectl get secret ecr-credentials -n bmi-app
 # Expected: NAME              TYPE                             DATA   AGE
 #           ecr-credentials   kubernetes.io/dockerconfigjson   1      5s
 ```
+
+> **Alternative — permanent ECR auth without token refresh:** `k8s/setup-ecr-on-nodes.sh` installs the kubelet ECR credential provider on all nodes so the kubelet authenticates ECR pulls via the EC2 instance profile directly. Once installed, this step (and `setup-ecr-secret.sh` in `deploy.sh`) becomes unnecessary. See Phase 1.1 Section D for instructions.
 
 ### Step 1 — Namespace
 
