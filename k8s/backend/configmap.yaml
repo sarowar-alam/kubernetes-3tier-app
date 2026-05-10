@@ -7,4 +7,4 @@ data:
   NODE_ENV:     "production"
   PORT:         "3000"
   # Set to the master node public IP and the frontend NodePort
-  FRONTEND_URL: "http://13.127.210.35:30080"
+  FRONTEND_URL: "http://3.110.161.247:30080"
