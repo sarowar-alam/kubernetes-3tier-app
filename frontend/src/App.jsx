@@ -30,7 +30,7 @@ export default function App() {
   return (
     <>
       <header className="app-header">
-        <h1>BMI & Health Tracker</h1>
+        <h1>OSTAD BMI & Health Tracker</h1>
         <p className="app-subtitle">Track your health metrics and reach your fitness goals</p>
       </header>
 
