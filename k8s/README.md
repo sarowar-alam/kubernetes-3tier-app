@@ -1,7 +1,7 @@
 ﻿# BMI Health Tracker — Kubernetes Implementation Guide
 
 **Repo:** https://github.com/sarowar-alam/kubernetes-3tier-app
-**App URL:** http://13.127.210.35:30080
+**App URL:** http://<MASTER-PUBLIC-IP>:30080
 **Namespace:** `bmi-app`
 
 ---
@@ -16,15 +16,16 @@
 
 Traffic flow:
 ```
-Browser → http://13.127.210.35:30080 (NodePort on master — public subnet)
+Browser → http://<MASTER-PUBLIC-IP>:30080 (NodePort on master — public subnet)
   └─ bmi-frontend-svc → Nginx pod :80
        └─ /api/* proxied → bmi-backend-svc:3000
             └─ bmi-postgres-svc:5432 → PostgreSQL StatefulSet
 ```
 
----
+> **Note:** The node names and IP addresses in the table above are from a specific cluster.
+> Replace them with your actual values in all commands throughout this guide.
 
-## Table of Contents
+---
 
 - [Prerequisites](#prerequisites)
 - [Part 1 — Deploy WITH Automation Scripts](#part-1--deploy-with-automation-scripts)
@@ -246,7 +247,7 @@ AWS Console → IAM → Users → your user → Add permissions → Create inlin
 
 ```bash
 # From your local machine — SSH through master to worker-1
-ssh -J ubuntu@13.127.210.35 ubuntu@<worker-1-private-ip>
+ssh -J ubuntu@<MASTER-PUBLIC-IP> ubuntu@<WORKER-1-PRIVATE-IP>
 
 # On worker-1:
 sudo mkdir -p /data/postgres
@@ -290,7 +291,7 @@ Two scripts handle the full lifecycle. Run them in order.
 
 ```bash
 # From local machine — jump through master to worker-1
-ssh -J ubuntu@13.127.210.35 ubuntu@10.0.132.170
+ssh -J ubuntu@<MASTER-PUBLIC-IP> ubuntu@<WORKER-1-PRIVATE-IP>
 
 # On k8s-lab-worker-1:
 sudo mkdir -p /data/postgres
@@ -316,7 +317,7 @@ exit
 > **Directory: k8s-lab-master — home directory (`~`)**
 
 ```bash
-ssh ubuntu@13.127.210.35
+ssh ubuntu@<MASTER-PUBLIC-IP>
 
 # Install AWS CLI
 curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/a.zip
@@ -361,22 +362,29 @@ kubectl get namespace bmi-app
 #           bmi-app   Active   5s
 ```
 
-```bash
-# Edit PostgreSQL secret — change password before applying
-nano k8s/postgres/secret.yaml
-# Change POSTGRES_PASSWORD: "CHANGE_ME" to something strong
-# Example: POSTGRES_PASSWORD: "MyStr0ng!Pass2026"
-
-kubectl apply -f k8s/postgres/secret.yaml
-```
+> **If using Part 1 (deploy.sh):** You can skip the secret creation below.
+> `deploy.sh` will prompt you for a database password and create both secrets
+> automatically on first run if they don’t exist yet.
+>
+> **If you want to pre-create secrets** (or are following Part 2 manually),
+> use the commands below. Use the **same password** in both.
 
 ```bash
-# Edit backend secret — DATABASE_URL password must match POSTGRES_PASSWORD above
-nano k8s/backend/secret.yaml
-# Change: postgres://bmi_user:CHANGE_ME@bmi-postgres-svc:5432/bmidb
-# To:     postgres://bmi_user:MyStr0ng!Pass2026@bmi-postgres-svc:5432/bmidb
+DB_PASS="<YOUR-STRONG-PASSWORD>"   # min 8 chars, e.g. MyStr0ng!Pass2026
 
-kubectl apply -f k8s/backend/secret.yaml
+# postgres-secret
+kubectl create secret generic postgres-secret \
+  --from-literal=POSTGRES_DB=bmidb \
+  --from-literal=POSTGRES_USER=bmi_user \
+  --from-literal=POSTGRES_PASSWORD="${DB_PASS}" \
+  --namespace=bmi-app \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# backend-secret — DATABASE_URL password must match POSTGRES_PASSWORD above
+kubectl create secret generic backend-secret \
+  --from-literal=DATABASE_URL="postgres://bmi_user:${DB_PASS}@bmi-postgres-svc:5432/bmidb" \
+  --namespace=bmi-app \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 **Verify:**
@@ -401,22 +409,22 @@ kubectl get secret -n bmi-app
 # Directory: local machine — anywhere
 
 # Copy the script to each node:
-scp k8s/setup-ecr-on-nodes.sh ubuntu@13.127.210.35:~/
+scp k8s/setup-ecr-on-nodes.sh ubuntu@<MASTER-PUBLIC-IP>:~/
 
-ssh -J ubuntu@13.127.210.35 ubuntu@10.0.132.170 \
+ssh -J ubuntu@<MASTER-PUBLIC-IP> ubuntu@<WORKER-1-PRIVATE-IP> \
   "cat > ~/setup-ecr-on-nodes.sh" < k8s/setup-ecr-on-nodes.sh
 
-ssh -J ubuntu@13.127.210.35 ubuntu@10.0.141.21 \
+ssh -J ubuntu@<MASTER-PUBLIC-IP> ubuntu@<WORKER-2-PRIVATE-IP> \
   "cat > ~/setup-ecr-on-nodes.sh" < k8s/setup-ecr-on-nodes.sh
 
 # Run on k8s-lab-master:
-ssh ubuntu@13.127.210.35 "sudo bash ~/setup-ecr-on-nodes.sh"
+ssh ubuntu@<MASTER-PUBLIC-IP> "sudo bash ~/setup-ecr-on-nodes.sh"
 
 # Run on k8s-lab-worker-1:
-ssh -J ubuntu@13.127.210.35 ubuntu@10.0.132.170 "sudo bash ~/setup-ecr-on-nodes.sh"
+ssh -J ubuntu@<MASTER-PUBLIC-IP> ubuntu@<WORKER-1-PRIVATE-IP> "sudo bash ~/setup-ecr-on-nodes.sh"
 
 # Run on k8s-lab-worker-2:
-ssh -J ubuntu@13.127.210.35 ubuntu@10.0.141.21 "sudo bash ~/setup-ecr-on-nodes.sh"
+ssh -J ubuntu@<MASTER-PUBLIC-IP> ubuntu@<WORKER-2-PRIVATE-IP> "sudo bash ~/setup-ecr-on-nodes.sh"
 ```
 
 > The script installs the `ecr-credential-provider` binary, writes the kubelet `CredentialProviderConfig`, and patches `/var/lib/kubelet/kubeadm-flags.env` to enable it. Kubelet restarts automatically.
@@ -484,7 +492,7 @@ grep "image:" k8s/frontend/deployment.yaml
 > **Directory: k8s-lab-master — ~/kubernetes-3tier-app**
 
 ```bash
-ssh ubuntu@13.127.210.35
+ssh ubuntu@<MASTER-PUBLIC-IP>
 cd kubernetes-3tier-app
 
 git pull
@@ -532,7 +540,7 @@ deployment.apps/bmi-backend successfully rolled out
 deployment.apps/bmi-frontend successfully rolled out
 
 [Done] Deployment complete!
-✅ App is live at: http://13.127.210.35:30080
+✅ App is live at: http://<MASTER-PUBLIC-IP>:30080
 ```
 
 **Verify:**
@@ -559,7 +567,7 @@ kubectl exec -n bmi-app deploy/bmi-backend -- wget -qO- http://localhost:3000/he
 # Expected: {"status":"ok"}
 ```
 
-**Open in browser: http://13.127.210.35:30080**
+**Open in browser: http://<MASTER-PUBLIC-IP>:30080**
 
 ---
 
@@ -794,7 +802,7 @@ git log --oneline -3
 > **Directory: k8s-lab-master — ~/kubernetes-3tier-app**
 
 ```bash
-ssh ubuntu@13.127.210.35
+ssh ubuntu@<MASTER-PUBLIC-IP>
 cd kubernetes-3tier-app
 
 git pull
@@ -818,9 +826,48 @@ kubectl get namespace bmi-app
 #           bmi-app   Active   5s
 ```
 
-### Step 1 — Refresh ECR Pull Secret
+### Step 0.5 — Label the PostgreSQL Storage Node and Create Application Secrets
 
-> The namespace from Step 0 must already exist before this command runs.
+> **Critical — do this before applying any postgres manifests.**
+> The `pv.yaml`, `statefulset.yaml`, and `migration-job.yaml` all use
+> `role: postgres-storage` as their node selector. Without this label the
+> postgres pod stays Pending forever.
+
+```bash
+# Replace <WORKER-1-NODE-NAME> with the exact name from: kubectl get nodes
+kubectl label node <WORKER-1-NODE-NAME> role=postgres-storage --overwrite
+```
+
+Verify:
+```bash
+kubectl get node <WORKER-1-NODE-NAME> --show-labels | grep postgres-storage
+# Expected: role=postgres-storage visible in the labels column
+```
+
+> **Create secrets** — the YAML files contain `CHANGE_ME` placeholders and must
+> not be applied directly. Use `--from-literal` with the same password in both.
+
+```bash
+DB_PASS="<YOUR-STRONG-PASSWORD>"   # min 8 chars
+
+kubectl create secret generic postgres-secret \
+  --from-literal=POSTGRES_DB=bmidb \
+  --from-literal=POSTGRES_USER=bmi_user \
+  --from-literal=POSTGRES_PASSWORD="${DB_PASS}" \
+  --namespace=bmi-app \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret generic backend-secret \
+  --from-literal=DATABASE_URL="postgres://bmi_user:${DB_PASS}@bmi-postgres-svc:5432/bmidb" \
+  --namespace=bmi-app \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Verify:
+```bash
+kubectl get secret postgres-secret backend-secret -n bmi-app
+# Expected: both TYPE=Opaque
+```
 
 ```bash
 # Directory: k8s-lab-master — ~/kubernetes-3tier-app
@@ -853,18 +900,18 @@ kubectl get secret ecr-credentials -n bmi-app
 ```bash
 # Directory: k8s-lab-master — ~/kubernetes-3tier-app
 
-kubectl apply -f k8s/postgres/secret.yaml
-# Creates postgres-secret (POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD)
+# Secrets were created in Step 0.5 — do NOT re-apply the YAML files (they contain CHANGE_ME)
 
 kubectl apply -f k8s/postgres/pv.yaml
-# Creates 5Gi hostPath PersistentVolume on k8s-lab-worker-1
+# Creates 5Gi hostPath PersistentVolume
+# nodeAffinity: role=postgres-storage — binds to the node labelled in Step 0.5
 # reclaimPolicy: Retain — data is NOT deleted if PVC or pod is deleted
 
 kubectl apply -f k8s/postgres/pvc.yaml
 # Creates PVC that binds to the above PV via storageClassName: manual
 
 kubectl apply -f k8s/postgres/statefulset.yaml
-# Creates postgres:14 pod — nodeSelector pins it to k8s-lab-worker-1
+# Creates postgres:14 pod — nodeSelector: role=postgres-storage (labelled in Step 0.5)
 # PGDATA=/var/lib/postgresql/data/pgdata (subdirectory prevents "not empty" errors)
 
 kubectl apply -f k8s/postgres/service.yaml
@@ -947,8 +994,7 @@ kubectl get job bmi-migrations -n bmi-app
 ```bash
 # Directory: k8s-lab-master — ~/kubernetes-3tier-app
 
-kubectl apply -f k8s/backend/secret.yaml
-# Creates/updates backend-secret with DATABASE_URL
+# Secret was created in Step 0.5 — do NOT re-apply the YAML file (it contains CHANGE_ME)
 
 kubectl apply -f k8s/backend/configmap.yaml
 # Creates/updates backend-config with NODE_ENV=production, PORT=3000, FRONTEND_URL
@@ -1031,7 +1077,7 @@ kubectl get svc -n bmi-app
 # bmi-postgres-svc   ClusterIP   5432/TCP       3m
 ```
 
-**App is live: http://13.127.210.35:30080**
+**App is live: http://<MASTER-PUBLIC-IP>:30080**
 
 ---
 
@@ -1059,7 +1105,6 @@ git pull && bash k8s/deploy.sh
 # Without script:
 git pull
 # Then run Phase 2.8 Steps 0–5
-```
 
 > `kubectl apply` with a changed image tag triggers a **rolling update** automatically.  
 > Pods are replaced one at a time — zero downtime.
@@ -1136,14 +1181,10 @@ kubectl wait --for=condition=complete job/bmi-migrations -n bmi-app --timeout=90
 
 | Item | Value |
 |---|---|
-| App URL | http://13.127.210.35:30080 |
-| Control-plane public IP | 13.127.210.35 |
-| Control-plane private IP | 10.0.10.34 |
-| Worker-1 private IP | 10.0.132.170 |
-| Worker-2 private IP | 10.0.141.21 |
+| App URL | `http://<MASTER-PUBLIC-IP>:30080` |
 | ECR registry | 388779989543.dkr.ecr.ap-south-1.amazonaws.com |
 | Kubernetes namespace | bmi-app |
-| PostgreSQL data path | /data/postgres on k8s-lab-worker-1 |
+| PostgreSQL data path | `/data/postgres` on the node labelled `role=postgres-storage` |
 | PV reclaim policy | Retain — data not deleted on pod/PVC deletion |
 | Image tag strategy | git short SHA — unique per commit |
 | ECR token lifetime | 12 hours — must refresh before deploying |
