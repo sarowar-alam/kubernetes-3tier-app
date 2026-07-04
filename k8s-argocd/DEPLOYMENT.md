@@ -839,3 +839,14 @@ kubectl annotate application bmi-health-tracker -n argocd \
 | ArgoCD watches | `k8s-argocd/app/` on `main` branch |
 | Sync waves | 1=Postgres, 2=Migrations, 3=Backend, 4=Frontend |
 | ECR token refresh | Every 6h via CronJob `ecr-secret-refresher` |
+
+---
+
+## Project Lead
+
+**MD Sarowar Alam**
+Lead DevOps Engineer, WPP Production
+📧 Email: [sarowar@hotmail.com](mailto:sarowar@hotmail.com)
+🔗 LinkedIn: https://www.linkedin.com/in/sarowar/
+
+---

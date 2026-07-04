@@ -946,9 +946,11 @@ Eliminates CORS entirely, hides the backend address from clients, and allows the
 
 ---
 
-## 🧑‍💻 Author
+## Project Lead
 
-*Md. Sarowar Alam*  
-Lead DevOps Engineer, Hogarth Worldwide  
-📧 Email: sarowar@hotmail.com  
+**MD Sarowar Alam**
+Lead DevOps Engineer, WPP Production
+📧 Email: [sarowar@hotmail.com](mailto:sarowar@hotmail.com)
 🔗 LinkedIn: https://www.linkedin.com/in/sarowar/
+
+---

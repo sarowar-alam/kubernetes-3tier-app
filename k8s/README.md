@@ -1192,9 +1192,11 @@ kubectl wait --for=condition=complete job/bmi-migrations -n bmi-app --timeout=90
 
 ---
 
-## Author
+## Project Lead
 
-*Md. Sarowar Alam*
-Lead DevOps Engineer, Hogarth Worldwide
-Email: sarowar@hotmail.com
-LinkedIn: https://www.linkedin.com/in/sarowar/
+**MD Sarowar Alam**
+Lead DevOps Engineer, WPP Production
+📧 Email: [sarowar@hotmail.com](mailto:sarowar@hotmail.com)
+🔗 LinkedIn: https://www.linkedin.com/in/sarowar/
+
+---
