@@ -10,9 +10,9 @@ spec:
     spec:
       restartPolicy: OnFailure
 
-      # Pin to k8s-lab-worker-1 alongside the postgres pod
+      # Pin alongside the postgres pod on the node labelled role=postgres-storage
       nodeSelector:
-        kubernetes.io/hostname: k8s-lab-worker-1
+        role: postgres-storage
 
       initContainers:
         # Wait until postgres is ready before running migrations

@@ -41,12 +41,74 @@ All prerequisites must be satisfied before starting either Part 1 or Part 2.
 
 ### Local Machine
 
-| Requirement | Install Command | Verify |
+> **Do all steps in this section on your laptop first — before SSH-ing into any server.**
+
+| Requirement | Install | Verify |
 |---|---|---|
-| Docker Desktop | https://www.docker.com/products/docker-desktop/ | `docker --version` |
-| AWS CLI v2 | macOS: `brew install awscli` / Windows: `winget install Amazon.AWSCLI` | `aws --version` |
+| Docker | see install steps below | `docker --version` |
+| AWS CLI v2 | see install steps below | `aws --version` |
 | Git | https://git-scm.org | `git --version` |
 | AWS credentials | Option A: named profile `sarowar-ostad` OR Option B: environment variables | see below |
+
+#### Install Docker
+
+**macOS / Windows:** Download and install Docker Desktop from https://www.docker.com/products/docker-desktop/ — it includes the Docker daemon and CLI.
+
+**Ubuntu / Debian (local machine or EC2):**
+```bash
+# Remove any old versions
+sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+
+# Install prerequisites
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg lsb-release
+
+# Add Docker's official GPG key and repository
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Install Docker CE
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+
+# Allow your user to run Docker without sudo
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+**Verify:**
+```bash
+docker --version
+# Expected: Docker version 25.x.x, build ...
+
+docker run --rm hello-world
+# Expected: Hello from Docker!
+```
+
+#### Install AWS CLI v2
+
+**macOS:** `brew install awscli`
+
+**Windows:** `winget install Amazon.AWSCLI`
+
+**Ubuntu / Debian:**
+```bash
+curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscli.zip
+unzip -q /tmp/awscli.zip -d /tmp/awscli-install
+sudo /tmp/awscli-install/aws/install
+rm -rf /tmp/awscli.zip /tmp/awscli-install
+```
+
+**Verify:**
+```bash
+aws --version
+# Expected: aws-cli/2.x.x Python/3.x.x ...
+```
 
 **Choose ONE of the two options below. Both work with all commands in this guide.**
 
@@ -176,7 +238,29 @@ AWS Console → IAM → Users → your user → Add permissions → Create inlin
 | kubeadm cluster running, all nodes Ready | Pods will not schedule without this |
 | containerd runtime on all nodes | Image pulls from ECR require containerd |
 | `kubectl` configured on master | All deploy commands run there |
-| `/data/postgres` on k8s-lab-worker-1 | PostgreSQL hostPath PV requires this directory |
+| `/data/postgres` on k8s-lab-worker-1 | PostgreSQL hostPath PV requires this directory — see below |
+
+#### Create the PostgreSQL data directory on Worker-1
+
+> **Run once before the first deploy.** `deploy.sh` does this automatically, but if you are following the manual path you must do it yourself.
+
+```bash
+# From your local machine — SSH through master to worker-1
+ssh -J ubuntu@13.127.210.35 ubuntu@<worker-1-private-ip>
+
+# On worker-1:
+sudo mkdir -p /data/postgres
+sudo chmod 777 /data/postgres
+# PostgreSQL pod runs as UID 999 — needs write access
+
+# Verify:
+ls -ld /data/postgres
+# Expected: drwxrwxrwx 2 root root 4096 ...
+
+exit
+```
+
+> **Note:** The worker-1 IP changes with each cluster. Substitute your actual private IP (e.g. `10.0.132.170`).
 
 Verify cluster is healthy:
 ```bash
@@ -413,33 +497,41 @@ bash k8s/deploy.sh
 **What the script does internally:**
 | Step | What happens | Timeout |
 |---|---|---|
-| [0/6] Refresh ECR secret | `setup-ecr-secret.sh` — creates/updates `ecr-credentials` imagePullSecret | — |
-| [1/6] Namespace | `kubectl apply -f k8s/namespace.yaml` | — |
-| [2/6] PostgreSQL | Applies secret→PV→PVC→StatefulSet→Service, waits for Ready | 120s |
-| [3/6] Migrations | Deletes old Job, applies migration Job, waits for Complete | 90s |
-| [4/6] Backend | Applies secret→configmap→deployment→service, waits for rollout | 90s |
-| [5/6] Frontend | Applies deployment→service, waits for rollout | 90s |
-| [6/6] Summary | `kubectl get pods -n bmi-app` | — |
+| [Phase 0] Prerequisites | Installs AWS CLI if missing; applies namespace; prompts for Worker-1 IP + creates `/data/postgres` if missing; creates secrets if missing | — |
+| [1/5] Refresh ECR secret | `setup-ecr-secret.sh` — creates/updates `ecr-credentials` imagePullSecret | — |
+| [2/5] PostgreSQL | Applies PV→PVC→StatefulSet→Service, waits for Ready | 120s |
+| [3/5] Migrations | Deletes old Job, applies migration Job, waits for Complete | 90s |
+| [4/5] Backend | Applies configmap→deployment→service, waits for rollout | 90s |
+| [5/5] Frontend | Applies deployment→service, waits for rollout | 90s |
 
 **Expected output:**
 ```
-[0/6] Refreshing ECR pull secret...
-✅ ECR secret ready (valid for 12 hours).
-[1/6] Creating namespace...
+[Phase 0] Checking prerequisites...
+   ✅ AWS CLI: aws-cli/2.x.x ...
 namespace/bmi-app configured
-[2/6] Deploying PostgreSQL...
+   ✅ /data/postgres already exists
+   ✅ Secrets already exist — skipping
+
+[1/5] Refreshing ECR pull secret...
+✅ ECR secret ready (valid for 12 hours).
+
+[2/5] Deploying PostgreSQL...
       Waiting for postgres pod to be Ready (up to 120s)...
 pod/postgres-0 condition met
-[3/6] Running database migrations...
+
+[3/5] Running database migrations...
       Waiting for migration job to complete (up to 90s)...
 job.batch/bmi-migrations condition met
-[4/6] Deploying backend...
+
+[4/5] Deploying backend...
       Waiting for backend pods to be Ready (up to 90s)...
 deployment.apps/bmi-backend successfully rolled out
-[5/6] Deploying frontend...
+
+[5/5] Deploying frontend...
       Waiting for frontend pods to be Ready (up to 90s)...
 deployment.apps/bmi-frontend successfully rolled out
-[6/6] Deployment complete!
+
+[Done] Deployment complete!
 ✅ App is live at: http://13.127.210.35:30080
 ```
 
@@ -709,7 +801,26 @@ git pull
 # Expected: 1 file changed — deployment YAML with updated image tag
 ```
 
-### Step 0 — Refresh ECR Pull Secret
+### Step 0 — Namespace
+
+> **The namespace must exist before any other resource that references it — especially the ECR secret created in Step 1.**
+
+```bash
+# Directory: k8s-lab-master — ~/kubernetes-3tier-app
+kubectl apply -f k8s/namespace.yaml
+# Expected: namespace/bmi-app created  (or 'configured' on re-runs)
+```
+
+**Verify:**
+```bash
+kubectl get namespace bmi-app
+# Expected: NAME      STATUS   AGE
+#           bmi-app   Active   5s
+```
+
+### Step 1 — Refresh ECR Pull Secret
+
+> The namespace from Step 0 must already exist before this command runs.
 
 ```bash
 # Directory: k8s-lab-master — ~/kubernetes-3tier-app
@@ -736,21 +847,6 @@ kubectl get secret ecr-credentials -n bmi-app
 ```
 
 > **Alternative — permanent ECR auth without token refresh:** `k8s/setup-ecr-on-nodes.sh` installs the kubelet ECR credential provider on all nodes so the kubelet authenticates ECR pulls via the EC2 instance profile directly. Once installed, this step (and `setup-ecr-secret.sh` in `deploy.sh`) becomes unnecessary. See Phase 1.1 Section D for instructions.
-
-### Step 1 — Namespace
-
-```bash
-# Directory: k8s-lab-master — ~/kubernetes-3tier-app
-kubectl apply -f k8s/namespace.yaml
-# Expected: namespace/bmi-app configured
-```
-
-**Verify:**
-```bash
-kubectl get namespace bmi-app
-# Expected: NAME      STATUS   AGE
-#           bmi-app   Active   ...
-```
 
 ### Step 2 — PostgreSQL
 

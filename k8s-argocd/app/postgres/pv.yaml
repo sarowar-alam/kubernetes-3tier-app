@@ -1,7 +1,8 @@
 # PersistentVolume — cluster-scoped (no namespace)
-# Pinned to k8s-lab-worker-1 via nodeAffinity so data survives pod reschedules.
-# The directory /data/postgres must exist on k8s-lab-worker-1:
-#   sudo mkdir -p /data/postgres && sudo chmod 777 /data/postgres
+# Pinned to the node labelled role=postgres-storage via nodeAffinity so data
+# survives pod reschedules. The label is applied by bootstrap.sh to whatever
+# worker node the operator specifies. The directory /data/postgres must exist
+# on that node (bootstrap.sh creates it automatically).
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -22,7 +23,7 @@ spec:
     required:
       nodeSelectorTerms:
         - matchExpressions:
-            - key:      kubernetes.io/hostname
+            - key:      role
               operator: In
               values:
-                - k8s-lab-worker-1
+                - postgres-storage

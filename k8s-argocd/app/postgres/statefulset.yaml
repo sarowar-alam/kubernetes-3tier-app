@@ -16,9 +16,10 @@ spec:
       labels:
         app: postgres
     spec:
-      # Pin to k8s-lab-worker-1 so it co-locates with the hostPath PV
+      # Pin to the node labelled role=postgres-storage so it co-locates
+      # with the hostPath PV (label applied by bootstrap.sh at first run)
       nodeSelector:
-        kubernetes.io/hostname: k8s-lab-worker-1
+        role: postgres-storage
 
       containers:
         - name: postgres

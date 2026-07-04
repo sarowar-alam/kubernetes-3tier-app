@@ -4,25 +4,41 @@
 # One-time setup: installs ArgoCD on the cluster, applies secrets, then creates
 # the ArgoCD Application which triggers the first automated GitOps sync.
 #
-# Run ONCE on the control-plane node (10.0.5.64).
+# Run ONCE on the control-plane node.
 #
 # Usage:
 #   git clone https://github.com/sarowar-alam/kubernetes-3tier-app
 #   cd kubernetes-3tier-app
 #   bash k8s-argocd/bootstrap.sh
 #
-# Prerequisites:
-#   - kubectl configured and pointing at the cluster
-#   - AWS CLI installed with EC2 instance profile attached
-#   - k8s-argocd/app/postgres/secret.yaml present locally (gitignored)
-#   - k8s-argocd/app/backend/secret.yaml present locally (gitignored)
-#   - /data/postgres directory created on k8s-worker-1
+# Optional environment variables (set to skip interactive prompts):
+#   WORKER1_HOSTNAME   Kubernetes node name of the worker that hosts PostgreSQL
+#                      storage (shown by 'kubectl get nodes')
+#                      e.g.  export WORKER1_HOSTNAME=k8s-lab-worker-1
+#
+# One manual prerequisite (cannot be automated by this script):
+#   Attach the IAM role with AmazonEC2ContainerRegistryReadOnly to all EC2
+#   instances in the AWS console before running.
 # =============================================================================
 
 set -euo pipefail
 
 NAMESPACE_APP="bmi-app"
 NAMESPACE_ARGOCD="argocd"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: resolve the Kubernetes node name of the postgres storage worker
+# ─────────────────────────────────────────────────────────────────────────────
+get_worker1_hostname() {
+  if [[ -z "${WORKER1_HOSTNAME:-}" ]]; then
+    echo "   Available nodes:"
+    kubectl get nodes --no-headers 2>/dev/null \
+      | awk '{print "     " $1 "  (" $2 ")"}'  || true
+    echo ""
+    read -rp "   Enter the node name that will host PostgreSQL storage: " WORKER1_HOSTNAME
+    export WORKER1_HOSTNAME
+  fi
+}
 
 # Fetch the public IP of this node (control-plane) via IMDSv2
 IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
@@ -35,6 +51,10 @@ echo "================================================"
 echo " BMI Health Tracker — ArgoCD Bootstrap"
 echo "================================================"
 echo ""
+
+# Resolve worker-1 node name early — needed for step 1 labeling and step 4
+get_worker1_hostname
+echo "   Using postgres storage node: ${WORKER1_HOSTNAME}"
 
 # ── Step 0: ensure AWS CLI is installed (required for ECR token refresh) ─────
 if ! command -v aws >/dev/null 2>&1; then
@@ -93,6 +113,11 @@ kubectl apply -f k8s-argocd/argocd/namespace.yaml
 kubectl apply -f k8s-argocd/app/namespace.yaml
 kubectl get ns "${NAMESPACE_ARGOCD}" "${NAMESPACE_APP}" --no-headers 2>/dev/null | \
   awk '{print "  \u2705  namespace/" $1}'
+
+# Label the storage node so YAML manifests can use a stable selector
+echo "      Labelling ${WORKER1_HOSTNAME} with role=postgres-storage..."
+kubectl label node "${WORKER1_HOSTNAME}" role=postgres-storage --overwrite
+echo "      \u2705  Node labelled"
 echo ""
 
 # 2. Apply gitignored secrets (one-time, manual step)
@@ -111,23 +136,18 @@ echo "  \u2705  postgres-pv status: ${PV_STATUS}"
 echo ""
 
 # 4. Create worker-1 data directory via a temporary pod (no SSH or IAM required)
-echo "[4/8] Ensuring /data/postgres exists on k8s-worker-1 (via kubectl pod)..."
+echo "[4/8] Ensuring /data/postgres exists on ${WORKER1_HOSTNAME} (via kubectl pod)..."
 
-# Delete stale node object for k8s-worker-1 if it exists from a previous cluster
-# bootstrap. If the node re-joined cleanly it will re-register itself automatically.
-kubectl delete node k8s-worker-1 --ignore-not-found 2>/dev/null && \
-  echo "      Removed stale node object (if any)." || true
-
-# Wait for k8s-lab-worker-1 to re-register as Ready before scheduling the busybox pod
-echo "      Waiting for k8s-lab-worker-1 to be Ready (up to 3 min)..."
+# Wait for the worker node to be Ready before scheduling the busybox pod
+echo "      Waiting for ${WORKER1_HOSTNAME} to be Ready (up to 3 min)..."
 for i in $(seq 1 36); do
-  STATUS=$(kubectl get node k8s-lab-worker-1 --no-headers 2>/dev/null | awk '{print $2}')
+  STATUS=$(kubectl get node "${WORKER1_HOSTNAME}" --no-headers 2>/dev/null | awk '{print $2}')
   if [[ "${STATUS}" == "Ready" ]]; then
-    echo "      k8s-lab-worker-1 is Ready."
+    echo "      ${WORKER1_HOSTNAME} is Ready."
     break
   fi
   if [[ $i -eq 36 ]]; then
-    echo "      ⚠️  k8s-lab-worker-1 not Ready after 3 min — check: kubectl get nodes"
+    echo "      ⚠️  ${WORKER1_HOSTNAME} not Ready after 3 min — check: kubectl get nodes"
   fi
   sleep 5
 done
@@ -135,7 +155,7 @@ kubectl run mkdir-postgres -n "${NAMESPACE_APP}" --restart=Never \
   --image=busybox \
   --overrides='{
     "spec": {
-      "nodeSelector": {"kubernetes.io/hostname": "k8s-lab-worker-1"},
+      "nodeSelector": {"role": "postgres-storage"},
       "containers": [{
         "name": "mkdir-postgres",
         "image": "busybox",
@@ -149,7 +169,7 @@ kubectl run mkdir-postgres -n "${NAMESPACE_APP}" --restart=Never \
 
 kubectl wait pod/mkdir-postgres -n "${NAMESPACE_APP}" \
   --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s 2>/dev/null \
-  && { echo "      /data/postgres created on k8s-lab-worker-1."; \
+  && { echo "      /data/postgres created on ${WORKER1_HOSTNAME}."; \
        echo "      Pod log:"; kubectl logs mkdir-postgres -n "${NAMESPACE_APP}" 2>/dev/null | sed 's/^/        /'; } \
   || echo "      ⚠️  Pod did not complete — check: kubectl logs mkdir-postgres -n ${NAMESPACE_APP}"
 kubectl delete pod mkdir-postgres -n "${NAMESPACE_APP}" --ignore-not-found 2>/dev/null
