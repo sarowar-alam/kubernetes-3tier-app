@@ -31,7 +31,7 @@
 
 This directory (`k8s-argocd/`) is a **self-contained GitOps delivery system** for the BMI Health Tracker — a 3-tier application (React frontend, Node.js backend, PostgreSQL database) running on a self-managed Kubernetes cluster on AWS EC2.
 
-**Live app:** http://13.127.88.162:30080  
+**Live app:** `http://<MASTER-PUBLIC-IP>:30080`
 **GitHub repo:** https://github.com/sarowar-alam/kubernetes-3tier-app
 
 ---
@@ -67,16 +67,17 @@ This directory (`k8s-argocd/`) is a **self-contained GitOps delivery system** fo
 │  └───────┼──────────────────────────────────────────────────┘    │
 └──────────┼───────────────────────────────────────────────────────┘
            │
-           ▼  http://10.0.130.111:30080
+           ▼  http://<MASTER-PUBLIC-IP>:30080
         Browser
 ```
 
 ### Cluster nodes
 
-| Hostname | Private IP | Role |
+| Node | Role | Note |
 |---|---|---|
-| k8s-control-plane | 10.0.5.64 | API server, scheduler, etcd |
-| k8s-worker-1 | 10.0.130.111 | All application pods, PostgreSQL storage |
+| master | Control-plane | API server, scheduler, etcd |
+| worker-1 | PostgreSQL storage | Hosts `/data/postgres`; labelled `role=postgres-storage` |
+| worker-2 | Application workloads | Runs backend and frontend pods |
 
 ### Traffic flow
 
@@ -157,7 +158,7 @@ k8s-argocd/
 
 | Tool | Minimum version | Install |
 |---|---|---|
-| Docker Desktop | 24+ | https://docs.docker.com/desktop/ |
+| Docker | 24+ | macOS/Windows: https://docs.docker.com/desktop/ — Ubuntu: see [DEPLOYMENT.md §Install Docker](DEPLOYMENT.md#install-docker) |
 | AWS CLI | 2.x | https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html |
 | Git | 2.x | https://git-scm.com/ |
 | kubectl | 1.28+ | https://kubernetes.io/docs/tasks/tools/ |
@@ -176,7 +177,7 @@ export KUBECONFIG=~/.kube/config-bmi
 kubectl get nodes   # should show both nodes
 ```
 
-### Control-plane node (10.0.5.64)
+### Control-plane node
 
 | Tool | Install command |
 |---|---|
@@ -198,21 +199,27 @@ The cluster nodes need permission to pull images from ECR without static credent
 2. Trusted entity: **EC2**
 3. Attach policy: `AmazonEC2ContainerRegistryReadOnly`
 4. Name the role: `k8s-node-ecr-role`
-5. Attach to **both** EC2 instances:  
+5. Attach to **all 3** EC2 instances (master + worker-1 + worker-2):  
    EC2 → select instance → **Actions → Security → Modify IAM role**
 
 ### 6.2 Create PostgreSQL data directory on worker-1
 
-`bootstrap.sh` handles this automatically using a temporary `busybox` pod pinned to `k8s-worker-1`. No SSH or extra IAM permissions needed.
+`bootstrap.sh` handles this automatically — it prompts for the worker-1 node name,
+labels the node with `role=postgres-storage`, then runs a temporary `busybox` pod
+(using that label as its nodeSelector) to create `/data/postgres`. No SSH needed.
 
-If you need to do it manually:
+If you need to do it **manually**, first label the node, then run the pod:
 
 ```bash
+# 1. Label the node (replace <WORKER-1-NODE-NAME> with output of: kubectl get nodes)
+kubectl label node <WORKER-1-NODE-NAME> role=postgres-storage --overwrite
+
+# 2. Create the directory via a busybox pod scheduled on the labelled node
 kubectl run mkdir-postgres -n bmi-app --restart=Never \
   --image=busybox \
   --overrides='{
     "spec": {
-      "nodeSelector": {"kubernetes.io/hostname": "k8s-worker-1"},
+      "nodeSelector": {"role": "postgres-storage"},
       "containers": [{
         "name": "mkdir-postgres",
         "image": "busybox",
@@ -251,29 +258,38 @@ Secrets are namespaced resources — the `bmi-app` namespace must exist before a
 kubectl apply -f k8s-argocd/app/namespace.yaml
 ```
 
-### 7.1 PostgreSQL secret
+### 7.1 Create secrets interactively
 
-File: `k8s-argocd/app/postgres/secret.yaml`
+> The secret YAML files in the repo contain `CHANGE_ME` placeholder passwords.
+> **Do not apply them directly.** Use the commands below to set a real password.
+> Use the **same password** in both commands.
 
-> ⚠️ This file already exists in the repo with default dev credentials. **Change the password before using on any shared or production cluster.**
-
-Apply it:
 ```bash
-kubectl apply -f k8s-argocd/app/postgres/secret.yaml
+DB_PASS="<YOUR-STRONG-PASSWORD>"   # min 8 chars, e.g. MyStr0ng!Pass2026
+
+# postgres-secret — read by the PostgreSQL pod at startup
+kubectl create secret generic postgres-secret \
+  --from-literal=POSTGRES_DB=bmidb \
+  --from-literal=POSTGRES_USER=bmi_user \
+  --from-literal=POSTGRES_PASSWORD="${DB_PASS}" \
+  --namespace=bmi-app \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# backend-secret — DATABASE_URL must use the same password as above
+kubectl create secret generic backend-secret \
+  --from-literal=DATABASE_URL="postgres://bmi_user:${DB_PASS}@bmi-postgres-svc:5432/bmidb" \
+  --namespace=bmi-app \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-### 7.2 Backend secret
-
-File: `k8s-argocd/app/backend/secret.yaml`
-
-The `DATABASE_URL` password **must match** `POSTGRES_PASSWORD` in the postgres secret above.
-
-Apply it:
+Verify:
 ```bash
-kubectl apply -f k8s-argocd/app/backend/secret.yaml
+kubectl get secret postgres-secret backend-secret -n bmi-app
+# Expected: both TYPE=Opaque
 ```
 
-> These secrets are applied once. ArgoCD does not manage them (they are gitignored). They persist across all future syncs.
+> These secrets are created once. ArgoCD does not manage them (the YAML files are
+> gitignored). They persist across all future syncs and are never overwritten by ArgoCD.
 
 ---
 
@@ -282,38 +298,39 @@ kubectl apply -f k8s-argocd/app/backend/secret.yaml
 Run **once**, from the control-plane node, after completing sections 6 and 7:
 
 ```bash
-# On your local machine
-git clone https://github.com/sarowar-alam/kubernetes-3tier-app
+# SSH to control-plane
+ssh ubuntu@<MASTER-PUBLIC-IP>
+
+# Clone the full repo (bootstrap.sh must run from the repo root)
+git clone https://github.com/sarowar-alam/kubernetes-3tier-app.git
 cd kubernetes-3tier-app
 
-# Copy the repo to the control-plane
-scp -r k8s-argocd ubuntu@10.0.5.64:~/kubernetes-3tier-app/
-
-# SSH to control-plane and run bootstrap
-ssh ubuntu@10.0.5.64
-cd kubernetes-3tier-app
+# Run bootstrap
 bash k8s-argocd/bootstrap.sh
+# The script will prompt: "Enter the node name that will host PostgreSQL storage:"
+# Run 'kubectl get nodes' first to see the exact node names, then enter worker-1's name
 ```
 
 ### What `bootstrap.sh` does, step by step
 
 | Step | Action |
 |---|---|
-| 0 | Installs AWS CLI if not already present (required for ECR token refresh) |
-| 1 | Creates `argocd` and `bmi-app` namespaces |
+| 0 | Installs AWS CLI if not already present |
+| Pre-flight | Prompts for `WORKER1_HOSTNAME` (the node name from `kubectl get nodes` that will host PostgreSQL); verifies all required files exist |
+| 1 | Creates `argocd` and `bmi-app` namespaces; **labels `WORKER1_HOSTNAME` with `role=postgres-storage`** so PV and StatefulSet can find the right node |
 | 2 | Applies the gitignored secrets (`postgres-secret` + `backend-secret`) |
-| 3 | Creates the PostgreSQL PersistentVolume (cluster-scoped) |
-| 4 | Creates `/data/postgres` on worker-1 via a temporary `busybox` pod (no SSH needed) |
+| 3 | Creates the PostgreSQL PersistentVolume (cluster-scoped, uses `role=postgres-storage` nodeAffinity) |
+| 4 | Creates `/data/postgres` on the labelled node via a temporary `busybox` pod (no SSH needed) |
 | 4.5 | Creates the `ecr-credentials` pull secret so pods can pull images from ECR |
 | 5 | Installs ArgoCD from the official stable manifest |
-| 6 | Exposes the ArgoCD UI as a NodePort service |
-| 7 | Creates the ArgoCD Application — this triggers the **first automated sync** |
-| 8 | Prints a live verification summary (namespaces, secrets, PV, ArgoCD app status) |
+| 6 | Exposes the ArgoCD UI as a NodePort service on port 30081 |
+| 7 | Creates the ArgoCD Application — triggers the **first automated sync** |
+| 8 | Prints summary: ArgoCD URL, admin password, App URL |
 
 At the end, the script prints:
 
 ```
-ArgoCD UI : http://10.0.130.111:<port>
+ArgoCD UI : http://<MASTER-PUBLIC-IP>:30081
 Username  : admin
 Password  : <auto-generated>
 ```
