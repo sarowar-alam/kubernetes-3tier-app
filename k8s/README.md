@@ -458,8 +458,9 @@ bash k8s/build-and-push.sh
 | [1/5] ECR Login | `aws ecr get-login-password \| docker login` |
 | [2/5] Build | `docker build -t bmi-backend:<SHA> ./backend` and `./frontend` |
 | [3/5] Tag | `docker tag` — adds SHA and `latest` tags for ECR |
+| [3b/5] Ensure ECR repos | `aws ecr describe-repositories` — auto-creates `bmi-backend`/`bmi-frontend` via `aws ecr create-repository` if missing |
 | [4/5] Push | `docker push` — all 4 tags (2 images × 2 tags) |
-| [5/5] Patch + Commit | `sed` updates deployment YAMLs → `git commit && git push` |
+| [5/5] Patch + Commit | `sed` (or `pwsh` fallback on Windows without Git Bash/WSL) updates deployment YAMLs → `git commit && git push origin HEAD` |
 
 **Expected output:**
 ```
@@ -467,6 +468,9 @@ bash k8s/build-and-push.sh
 Login Succeeded
 [2/5] Building backend image...
 [3/5] Tagging images...
+[3b/5] Ensuring ECR repositories exist...
+      bmi-backend already exists.
+      bmi-frontend already exists.
 [4/5] Pushing backend to ECR...
 [5/5] Updating deployment manifests...
       Manifests committed and pushed to git.
