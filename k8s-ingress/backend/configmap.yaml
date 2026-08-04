@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: bmi-app
+data:
+  NODE_ENV:     "production"
+  PORT:         "3000"
+  # Set to the master node public IP (or AWS LB DNS name once created) — CORS is moot since nginx proxies same-origin
+  FRONTEND_URL: "http://3.110.161.247:30080"
