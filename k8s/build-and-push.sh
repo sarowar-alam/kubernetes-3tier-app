@@ -22,6 +22,7 @@ set -euo pipefail
 # CONFIG — edit AWS_ACCOUNT_ID and AWS_REGION
 # ──────────────────────────────────────────────
 AWS_PROFILE="sarowar-ostad"
+export AWS_PROFILE
 AWS_ACCOUNT_ID="388779989543"
 AWS_REGION="ap-south-1"
 # ──────────────────────────────────────────────
@@ -34,14 +35,12 @@ patch_image_tag() {
     sed -i "s|${pattern}|image: ${new_image}|g" "$file"
   elif command -v pwsh &>/dev/null; then
     pwsh -NoProfile -Command \
-      "\$c = Get-Content '${file}'; \$c = \$c -replace '${pattern}', 'image: ${new_image}'; \$c | Set-Content '${file}'"
+      "\$c = Get-Content \"${file}\"; \$c = \$c -replace '${pattern}', 'image: ${new_image}'; \$c | Set-Content \"${file}\""
   else
     echo "ERROR: neither 'sed' nor 'pwsh' found — cannot patch $file" >&2
     exit 1
   fi
 }
-
-export AWS_PROFILE
 
 ECR_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
@@ -104,7 +103,7 @@ if git diff --staged --quiet; then
   echo "      Manifests unchanged (same git SHA) — no commit needed."
 else
   git commit -m "deploy: image tag ${TAG} (${TIMESTAMP})"
-  git push
+  git push origin HEAD
   echo "      Manifests committed and pushed to git."
 fi
 
