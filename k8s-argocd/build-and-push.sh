@@ -27,6 +27,21 @@ AWS_ACCOUNT_ID="388779989543"
 AWS_REGION="ap-south-1"
 # ──────────────────────────────────────────────
 
+# Replaces the image line in a deployment YAML — works with sed (Git Bash/Linux/WSL) or pwsh (Windows)
+patch_image_tag() {
+  local file="$1" service="$2" new_image="$3"
+  local pattern="image: .*bmi-${service}:.*"
+  if command -v sed &>/dev/null; then
+    sed -i "s|${pattern}|image: ${new_image}|g" "$file"
+  elif command -v pwsh &>/dev/null; then
+    pwsh -NoProfile -Command \
+      "\$c = Get-Content '${file}'; \$c = \$c -replace '${pattern}', 'image: ${new_image}'; \$c | Set-Content '${file}'"
+  else
+    echo "ERROR: neither 'sed' nor 'pwsh' found — cannot patch $file" >&2
+    exit 1
+  fi
+}
+
 export AWS_PROFILE
 
 ECR_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -74,10 +89,8 @@ echo ""
 
 # ── Step 5: Patch k8s-argocd/app/ manifests and commit ──────────────────────
 echo "[5/5] Patching k8s-argocd/app/ manifests with new image tag..."
-sed -i "s|image: .*bmi-backend:.*|image: ${ECR_BASE}/bmi-backend:${TAG}|g" \
-  k8s-argocd/app/backend/deployment.yaml
-sed -i "s|image: .*bmi-frontend:.*|image: ${ECR_BASE}/bmi-frontend:${TAG}|g" \
-  k8s-argocd/app/frontend/deployment.yaml
+patch_image_tag k8s-argocd/app/backend/deployment.yaml  backend  "${ECR_BASE}/bmi-backend:${TAG}"
+patch_image_tag k8s-argocd/app/frontend/deployment.yaml frontend "${ECR_BASE}/bmi-frontend:${TAG}"
 
 git add k8s-argocd/app/backend/deployment.yaml \
         k8s-argocd/app/frontend/deployment.yaml
