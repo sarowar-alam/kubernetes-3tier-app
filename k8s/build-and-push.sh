@@ -26,6 +26,21 @@ AWS_ACCOUNT_ID="388779989543"
 AWS_REGION="ap-south-1"
 # ──────────────────────────────────────────────
 
+# Replaces the image line in a deployment YAML — works with sed (Git Bash/Linux/WSL) or pwsh (Windows)
+patch_image_tag() {
+  local file="$1" service="$2" new_image="$3"
+  local pattern="image: .*bmi-${service}:.*"
+  if command -v sed &>/dev/null; then
+    sed -i "s|${pattern}|image: ${new_image}|g" "$file"
+  elif command -v pwsh &>/dev/null; then
+    pwsh -NoProfile -Command \
+      "\$c = Get-Content '${file}'; \$c = \$c -replace '${pattern}', 'image: ${new_image}'; \$c | Set-Content '${file}'"
+  else
+    echo "ERROR: neither 'sed' nor 'pwsh' found — cannot patch $file" >&2
+    exit 1
+  fi
+}
+
 export AWS_PROFILE
 
 ECR_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -78,12 +93,9 @@ docker push "${ECR_BASE}/bmi-frontend:latest"
 echo ""
 
 # ── Step 5: Update deployment YAMLs ──────────────────────────────────────────
-# Pattern matches ANY existing image value for these repos (works on every re-run).
 echo "[5/5] Updating deployment manifests..."
-sed -i "s|image: .*bmi-backend:.*|image: ${ECR_BASE}/bmi-backend:${TAG}|g" \
-  k8s/backend/deployment.yaml
-sed -i "s|image: .*bmi-frontend:.*|image: ${ECR_BASE}/bmi-frontend:${TAG}|g" \
-  k8s/frontend/deployment.yaml
+patch_image_tag k8s/backend/deployment.yaml  backend  "${ECR_BASE}/bmi-backend:${TAG}"
+patch_image_tag k8s/frontend/deployment.yaml frontend "${ECR_BASE}/bmi-frontend:${TAG}"
 
 # Commit and push the updated manifests so the cluster always gets the latest
 git add k8s/backend/deployment.yaml k8s/frontend/deployment.yaml
