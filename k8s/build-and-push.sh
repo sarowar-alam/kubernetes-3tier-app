@@ -80,6 +80,23 @@ docker tag "bmi-frontend:${TAG}" "${ECR_BASE}/bmi-frontend:${TAG}"
 docker tag "bmi-frontend:${TAG}" "${ECR_BASE}/bmi-frontend:latest"
 echo ""
 
+# ── Step 3b: Ensure ECR repos exist (creates them if missing) ────────────────
+echo "[3b/5] Ensuring ECR repositories exist..."
+for repo in bmi-backend bmi-frontend; do
+  if aws ecr describe-repositories --repository-names "$repo" --region "${AWS_REGION}" &>/dev/null; then
+    echo "      $repo already exists."
+  else
+    echo "      Creating $repo..."
+    aws ecr create-repository \
+      --repository-name "$repo" \
+      --region "${AWS_REGION}" \
+      --image-scanning-configuration scanOnPush=true \
+      --image-tag-mutability MUTABLE \
+      --output text --query 'repository.repositoryUri'
+  fi
+done
+echo ""
+
 # ── Step 4: Push ─────────────────────────────────────────────────────────────
 echo "[4/5] Pushing backend to ECR..."
 docker push "${ECR_BASE}/bmi-backend:${TAG}"
