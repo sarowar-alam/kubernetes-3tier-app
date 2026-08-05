@@ -2,7 +2,7 @@
 
 A production-ready 3-tier web application for tracking body measurements and computing health metrics. Built with React, Node.js/Express, and PostgreSQL, deployed on a self-managed Kubernetes cluster on AWS EC2.
 
-**Live app:** http://13.127.88.162:30080  
+**Live app:** http://13.233.168.188:30080 (current cluster — plain NodePort variant, see [Alternative Kubernetes Exposure Variants](#alternative-kubernetes-exposure-variants))
 **Repository:** https://github.com/sarowar-alam/kubernetes-3tier-app
 
 ---
@@ -23,11 +23,12 @@ A production-ready 3-tier web application for tracking body measurements and com
 12. [Cluster Provisioning — `create_cluster.sh`](#cluster-provisioning--create_clustersh)
 13. [GitOps Deployment — ArgoCD ✅ Active](#gitops-deployment--argocd--active)
 14. [Legacy kubectl Deployment — `k8s/`](#legacy-kubectl-deployment--k8s)
-15. [Update the Application](#update-the-application)
-16. [Rollback](#rollback)
-17. [Operational Runbook](#operational-runbook)
-18. [Security](#security)
-19. [Design Decisions](#design-decisions)
+15. [Alternative Kubernetes Exposure Variants](#alternative-kubernetes-exposure-variants)
+16. [Update the Application](#update-the-application)
+17. [Rollback](#rollback)
+18. [Operational Runbook](#operational-runbook)
+19. [Security](#security)
+20. [Design Decisions](#design-decisions)
 
 ---
 
@@ -78,10 +79,16 @@ The browser never communicates directly with the backend. Nginx receives all tra
 
 **Cluster nodes:**
 
-| Hostname | IP | Role |
-|---|---|---|
-| k8s-control-plane | 10.0.5.64 | API server, scheduler, etcd |
-| k8s-worker-1 | 10.0.130.111 | Runs all application pods, PostgreSQL storage |
+| Hostname | Role |
+|---|---|
+| k8s-lab-master | Control-plane (public subnet) |
+| k8s-lab-worker-1 | Worker — PostgreSQL storage (`role=postgres-storage`) |
+| k8s-lab-worker-2 | Worker |
+
+> IPs change every time the cluster is re-provisioned via `create_cluster.sh` —
+> see `k8s-cluster-state.env` (generated, gitignored) for the current cluster's
+> actual IPs/instance IDs. Examples throughout this README use illustrative
+> IPs from past clusters.
 
 ---
 
@@ -155,7 +162,26 @@ The browser never communicates directly with the backend. Nginx receives all tra
     ├── setup-ecr-on-nodes.sh
     ├── postgres/                   # secret, pv, pvc, statefulset, service, migrations
     ├── backend/                    # secret, configmap, deployment, service
-    └── frontend/                   # deployment, service
+    └── frontend/                   # deployment, service — Service type NodePort :30080
+│
+├── k8s-ingress/                     # Alternative — ingress-nginx + manually-created AWS NLB
+│   ├── README.md                   # full deploy/teardown docs, script + manual paths
+│   ├── deploy.sh
+│   ├── ingress/                    # install-ingress-nginx.sh, bmi-ingress.yaml (Ingress resource)
+│   ├── postgres/ backend/          # same manifests as k8s/
+│   └── frontend/                   # Service type ClusterIP — exposed via Ingress, not NodePort
+│
+├── k8s-LoadBalancer/                # Alternative — MetalLB + manually-created AWS NLB
+│   ├── README.md
+│   ├── deploy.sh
+│   ├── metallb/                    # install-metallb.sh, ipaddresspool.yaml, l2advertisement.yaml
+│   └── postgres/ backend/ frontend/  # frontend Service type LoadBalancer (MetalLB-assigned VIP)
+│
+└── k8s-LoadBalancer-annotations/    # Alternative — AWS Load Balancer Controller (auto-provisions a real NLB)
+    ├── README.md                   # includes Teardown section (script + manual)
+    ├── deploy.sh / teardown.sh
+    ├── aws-lb-controller/          # setup-iam-and-subnets.sh, install-controller.sh, patch-node-provider-ids.sh, teardown-iam-and-subnets.sh
+    └── postgres/ backend/ frontend/  # frontend Service type LoadBalancer, NLB fully controller-managed
 ```
 
 ---
@@ -754,6 +780,31 @@ kubectl apply -f k8s/backend/secret.yaml
 
 bash k8s/deploy.sh
 ```
+
+---
+
+## Alternative Kubernetes Exposure Variants
+
+Beyond `k8s-argocd/` (active GitOps path) and legacy `k8s/` (plain NodePort,
+above), this repo includes three more self-contained variants that expose the
+same app a different way — useful for comparing approaches on a kubeadm
+cluster that has **no cloud-controller-manager** (so `Service type=LoadBalancer`
+never auto-provisions anything on its own).
+
+> **Only run one variant at a time.** They all share the same namespace
+> (`bmi-app`), PostgreSQL hostPath (`/data/postgres`), and node label
+> (`role=postgres-storage`) — tear one down before deploying another (each
+> variant's README has a full `## Teardown` section, script + manual).
+
+| Variant | Folder | External entry point | LB provisioning |
+|---|---|---|---|
+| Plain NodePort | [`k8s/`](k8s/README.md) | `http://<node-ip>:30080` directly | None needed |
+| Ingress + manual NLB | [`k8s-ingress/`](k8s-ingress/README.md) | ingress-nginx (NodePort 30080) → AWS NLB (manual AWS CLI/Console) | Manual, one-time |
+| MetalLB + manual NLB | [`k8s-LoadBalancer/`](k8s-LoadBalancer/README.md) | MetalLB VIP on frontend `Service type=LoadBalancer`, NLB targets real node IPs (manual) | Manual, one-time |
+| AWS Load Balancer Controller | [`k8s-LoadBalancer-annotations/`](k8s-LoadBalancer-annotations/README.md) | Real NLB auto-provisioned from Service annotations — no manual AWS steps | Fully automatic |
+
+Each folder's `README.md` documents both the scripted (`deploy.sh`) and full
+manual (`kubectl`/AWS CLI, no scripts) path, plus teardown instructions.
 
 ---
 
