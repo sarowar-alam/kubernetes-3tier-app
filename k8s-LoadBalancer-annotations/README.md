@@ -360,6 +360,33 @@ other role still uses it) and removes the `kubernetes.io/role/elb` /
 prompt for explicit `yes` confirmation before making changes since they
 delete real AWS resources.
 
+### Namespace stuck in `Terminating` after teardown?
+
+This happens if the AWS Load Balancer Controller gets uninstalled (Helm
+release removed) **before** `bmi-frontend-svc` finishes being deleted. The
+Service has a `service.k8s.aws/resources` finalizer that only the
+controller can clear — with the controller gone, nothing will ever remove
+it, so the Service (and the namespace containing it) stays stuck forever.
+`teardown.sh` avoids this by deleting the Service and waiting for it to
+fully disappear *before* uninstalling the controller — but if you run the
+steps manually/out of order, or interrupt the script mid-way, you can hit
+this. Check for it and fix it:
+
+```bash
+kubectl get svc bmi-frontend-svc -n bmi-app -o yaml | grep -E "deletionTimestamp|finalizers"
+```
+
+If you see a `deletionTimestamp` and `service.k8s.aws/resources` in
+`finalizers`, and you've already confirmed the real NLB/target group are
+gone from AWS (`aws elbv2 describe-load-balancers`), it's safe to manually
+clear the finalizer so Kubernetes can finish removing the object:
+
+```bash
+kubectl patch svc bmi-frontend-svc -n bmi-app -p '{"metadata":{"finalizers":[]}}' --type=merge
+```
+
+The namespace should finish terminating within a few seconds afterward.
+
 ---
 
 ## Project Lead
