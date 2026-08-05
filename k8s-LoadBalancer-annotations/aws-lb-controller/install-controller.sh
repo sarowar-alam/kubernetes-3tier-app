@@ -26,7 +26,9 @@ set -euo pipefail
 CLUSTER_NAME="${CLUSTER_NAME:?Set CLUSTER_NAME to the same value used in setup-iam-and-subnets.sh}"
 VPC_ID="${VPC_ID:?Set VPC_ID to your VPC ID}"
 AWS_REGION="${AWS_REGION:-ap-south-1}"
-CONTROLLER_VERSION="${CONTROLLER_VERSION:-1.8.1}"   # Helm chart appVersion — check https://github.com/kubernetes-sigs/aws-load-balancer-controller/releases
+# Optional: pin a specific controller image tag (e.g. "3.5.0"). Leave unset to use
+# the eks-charts Helm chart's own appVersion default, which is always a valid image.
+CONTROLLER_VERSION="${CONTROLLER_VERSION:-}"
 # cert-manager 1.20+ requires k8s 1.32+ (CRD selectableFields field) — pin to the
 # latest 1.18.x patch, which supports k8s 1.29-1.33. Override if your cluster is newer.
 CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.18.6}"
@@ -68,14 +70,19 @@ echo ""
 
 # ── 4. Install the controller (self-managed cluster — no EKS API to auto-discover) ──
 echo "[4/5] Installing/upgrading aws-load-balancer-controller..."
-helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  --namespace kube-system \
-  --set clusterName="${CLUSTER_NAME}" \
-  --set region="${AWS_REGION}" \
-  --set vpcId="${VPC_ID}" \
-  --set image.tag="v${CONTROLLER_VERSION}" \
-  --set serviceAccount.create=true \
+HELM_ARGS=(
+  upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller
+  --namespace kube-system
+  --set clusterName="${CLUSTER_NAME}"
+  --set region="${AWS_REGION}"
+  --set vpcId="${VPC_ID}"
+  --set serviceAccount.create=true
   --set serviceAccount.name=aws-load-balancer-controller
+)
+if [ -n "${CONTROLLER_VERSION}" ]; then
+  HELM_ARGS+=(--set-string "image.tag=v${CONTROLLER_VERSION}")
+fi
+helm "${HELM_ARGS[@]}"
 
 echo "      Waiting for controller rollout (up to 120s)..."
 kubectl rollout status deployment/aws-load-balancer-controller \
