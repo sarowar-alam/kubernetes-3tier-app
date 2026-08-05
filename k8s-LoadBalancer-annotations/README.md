@@ -124,11 +124,34 @@ CLUSTER_NAME=bmi-k8s-lab VPC_ID=<your-vpc-id> AWS_REGION=ap-south-1 \
 bash k8s-LoadBalancer-annotations/aws-lb-controller/install-controller.sh
 ```
 
-This installs Helm (if missing), cert-manager (the controller's webhook TLS
-dependency), and the controller itself via the `eks-charts` Helm repo —
-using manual `clusterName`/`vpcId`/`region` flags since this is a
-self-managed kubeadm cluster, not real EKS (no control-plane API to
-auto-discover these values from).
+This runs 6 phases:
+1. **Patches `Node.spec.providerID`** on every node (see
+   ["Why does `patch-node-provider-ids.sh` exist?"](#why-does-patch-node-provider-idssh-exist-and-do-i-always-need-it)
+   below) via [`patch-node-provider-ids.sh`](aws-lb-controller/patch-node-provider-ids.sh).
+2. Installs Helm (if missing).
+3. Installs **cert-manager `v1.18.6`** (pinned — see note below) — the
+   controller's webhook TLS dependency.
+4. Adds the `eks-charts` Helm repo.
+5. Installs/upgrades the controller via Helm, using manual
+   `clusterName`/`vpcId`/`region` flags since this is a self-managed kubeadm
+   cluster, not real EKS (no control-plane API to auto-discover these values
+   from), then force-restarts the Deployment so it always resyncs against the
+   latest Node state from step 1.
+6. Verifies the controller pods are `Running`.
+
+> **cert-manager is pinned to `v1.18.6`, not "latest".** cert-manager v1.20+
+> requires Kubernetes 1.32+ (a CRD `selectableFields` feature) and fails with
+> a strict-decoding error on this cluster's Kubernetes 1.29. v1.18.x is the
+> latest branch still compatible with 1.29. Override with
+> `CERT_MANAGER_VERSION=vX.Y.Z` if you upgrade the cluster later.
+
+> **The controller image tag is *not* pinned** — `CONTROLLER_VERSION` is
+> empty by default, so Helm uses the `eks-charts` chart's own `appVersion`
+> default, which is always a valid, existing image. (An earlier version of
+> this script hardcoded `v1.8.1`, which doesn't exist — that numbering
+> belongs to the older `alb-ingress-controller`, not
+> `aws-load-balancer-controller`. Only set `CONTROLLER_VERSION` if you need
+> a specific controller version, e.g. `v2.13.0`.)
 
 **Verify:**
 ```bash
@@ -213,6 +236,22 @@ policy from Step 1 isn't attached to the right role), (3) the subnet IDs in
 (`kubernetes.io/role/elb=1`), (4) `kubectl describe svc bmi-frontend-svc -n bmi-app`
 for reconcile error events.
 
+**NLB gets a hostname but the target group has zero registered targets?**
+Check the controller logs for `providerID is not specified for node: <name>`:
+```bash
+kubectl logs -n kube-system deploy/aws-load-balancer-controller --tail=200 | grep providerID
+```
+This means `install-controller.sh`'s step `[1/6]` didn't run (or ran before
+the node existed — e.g. a node added after the initial install). Fix:
+```bash
+AWS_REGION=ap-south-1 bash k8s-LoadBalancer-annotations/aws-lb-controller/patch-node-provider-ids.sh
+kubectl rollout restart deployment/aws-load-balancer-controller -n kube-system
+```
+The explicit `rollout restart` matters: the controller does not always
+promptly re-reconcile `TargetGroupBinding`s just because a Node object was
+patched in the background — a restart forces it to resync immediately
+instead of waiting for its next periodic reconcile.
+
 ---
 
 ## Design Decisions
@@ -244,6 +283,21 @@ Attaching a permissive IAM policy to a role is itself a privileged
 operation — it should be done with your own admin AWS credentials, not
 from a script running on the cluster nodes.
 
+**Why does `patch-node-provider-ids.sh` exist, and do I always need it?**
+Yes — keep it. This is a **kubeadm/self-managed cluster with no
+cloud-controller-manager**, so kubelet never populates `Node.spec.providerID`.
+The AWS Load Balancer Controller's `TargetGroupBinding` reconciler requires
+this field to resolve a Node to an EC2 instance ID for target registration —
+without it, the target group stays permanently empty (`providerID is not
+specified for node: ...` in the controller logs). It's not a one-off
+workaround for a bug that got fixed; it's a permanent, structural gap on any
+cluster without a cloud-controller-manager. It's already wired into
+`install-controller.sh` as step `[1/6]` (idempotent — skips nodes that
+already have a `providerID`), so normal installs/reinstalls need no extra
+steps. You only need to run it standalone if you add a **new node** to an
+already-running cluster — in that case, also `rollout restart` the
+controller afterward (see the troubleshooting note above).
+
 ---
 
 ## Reference
@@ -258,8 +312,53 @@ from a script running on the cluster nodes.
 | Image tag strategy | git short SHA — unique per commit |
 | ECR token lifetime | 12 hours — must refresh before deploying |
 | Extra IAM policy | `AWSLoadBalancerControllerIAMPolicy`, attached to the shared node role |
-| Extra cluster components | cert-manager, aws-load-balancer-controller (both in scope beyond `k8s-LoadBalancer/`) |
+| Extra cluster components | cert-manager `v1.18.6` (pinned), aws-load-balancer-controller (both in scope beyond `k8s-LoadBalancer/`) |
 | NLB target group | type `instance`, auto-managed by the controller — no manual updates ever |
+| Node `providerID` | Patched automatically by `install-controller.sh` step `[1/6]` — required since this cluster has no cloud-controller-manager |
+| Teardown | `teardown.sh` (control-plane) + `aws-lb-controller/teardown-iam-and-subnets.sh` (local machine) — see [Teardown](#teardown) |
+
+---
+
+## Teardown
+
+Deleting the AWS Load Balancer Controller (or the cluster) *before* removing
+the app's Service would orphan the real NLB, target group, and the two
+controller-managed security groups in your AWS account — they're only
+cleaned up when the controller sees the owning Service get deleted. Use the
+two teardown scripts in this order:
+
+### Step 1 — Control-plane: app + controller
+
+> **Directory: k8s-lab-master — ~/kubernetes-3tier-app**
+
+```bash
+bash k8s-LoadBalancer-annotations/teardown.sh
+```
+
+Deletes the frontend `Service` first (triggers the controller to
+deprovision the NLB/target group/security groups), waits for that to
+finish, then deletes the rest of the app, uninstalls the
+aws-load-balancer-controller Helm release and cert-manager, and optionally
+the `bmi-app` namespace itself (prompts for confirmation — PVs use the
+`Retain` policy, so `/data/postgres` is never deleted by this).
+
+### Step 2 — Local machine: IAM + subnet cleanup
+
+> **Directory: local machine — kubernetes-3tier-app/**
+
+```bash
+AWS_PROFILE=sarowar-ostad \
+NODE_ROLE_NAME=<role-name> \
+PUBLIC_SUBNET_IDS="<subnet-id-1> <subnet-id-2>" \
+CLUSTER_NAME=bmi-k8s-lab \
+bash k8s-LoadBalancer-annotations/aws-lb-controller/teardown-iam-and-subnets.sh
+```
+
+Detaches and deletes the `AWSLoadBalancerControllerIAMPolicy` (only if no
+other role still uses it) and removes the `kubernetes.io/role/elb` /
+`kubernetes.io/cluster/<name>` tags from the public subnets. Both scripts
+prompt for explicit `yes` confirmation before making changes since they
+delete real AWS resources.
 
 ---
 

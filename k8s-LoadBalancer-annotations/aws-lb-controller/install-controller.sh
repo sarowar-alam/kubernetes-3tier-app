@@ -89,6 +89,12 @@ if [ -n "${CONTROLLER_VERSION}" ]; then
 fi
 helm "${HELM_ARGS[@]}"
 
+# Helm may not restart pods if nothing in the Deployment spec changed (e.g. on
+# repeat runs) — force a restart so the controller always resyncs against the
+# latest Node providerID state from step [1/6].
+echo "      Restarting controller to pick up latest Node state..."
+kubectl rollout restart deployment/aws-load-balancer-controller -n kube-system
+
 echo "      Waiting for controller rollout (up to 120s)..."
 kubectl rollout status deployment/aws-load-balancer-controller \
   -n kube-system --timeout=120s
