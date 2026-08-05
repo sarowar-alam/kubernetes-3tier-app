@@ -1139,6 +1139,66 @@ kubectl get pods -n bmi-app
 
 ---
 
+# Teardown
+
+> **Directory: k8s-lab-master — ~/kubernetes-3tier-app**
+
+Removes the app from the cluster. This variant has no AWS Load Balancer and
+no extra security-group rules of its own, so no AWS-side cleanup is needed
+afterward (NodePort 30080's security-group rule is safe to leave — other
+variants in this repo reuse the same port).
+
+```bash
+NAMESPACE=bmi-app
+
+# Frontend
+kubectl delete -f k8s/frontend/service.yaml --ignore-not-found=true
+kubectl delete -f k8s/frontend/deployment.yaml --ignore-not-found=true
+
+# Backend
+kubectl delete -f k8s/backend/service.yaml --ignore-not-found=true
+kubectl delete -f k8s/backend/deployment.yaml --ignore-not-found=true
+kubectl delete -f k8s/backend/configmap.yaml --ignore-not-found=true
+
+# Migrations
+kubectl delete job bmi-migrations -n "$NAMESPACE" --ignore-not-found=true
+kubectl delete -f k8s/postgres/migrations-configmap.yaml --ignore-not-found=true
+
+# PostgreSQL
+kubectl delete -f k8s/postgres/service.yaml --ignore-not-found=true
+kubectl delete -f k8s/postgres/statefulset.yaml --ignore-not-found=true
+kubectl delete -f k8s/postgres/pvc.yaml --ignore-not-found=true
+kubectl delete -f k8s/postgres/pv.yaml --ignore-not-found=true
+# PV reclaim policy is Retain — /data/postgres data on worker-1 is preserved
+
+# Secrets + ECR pull secret
+kubectl delete secret postgres-secret backend-secret ecr-credentials -n "$NAMESPACE" --ignore-not-found=true
+
+# Namespace
+kubectl delete namespace "$NAMESPACE" --ignore-not-found=true
+
+# Remove the postgres-storage label from worker-1
+kubectl label node <WORKER-1-NODE-NAME> role- 2>/dev/null || true
+```
+
+**Verify:**
+```bash
+kubectl get namespace bmi-app
+# Expected: Error from server (NotFound) — namespace fully removed
+
+kubectl get pv,pvc -A
+# Expected: no bmi-app resources listed
+```
+
+> If the namespace gets stuck in `Terminating`, check for pods still
+> finishing their termination grace period:
+> ```bash
+> kubectl get pods -n bmi-app -o custom-columns=NAME:.metadata.name,DELETED:.metadata.deletionTimestamp
+> ```
+> and force-delete any that linger: `kubectl delete pod <name> -n bmi-app --grace-period=0 --force`.
+
+---
+
 # Useful Commands
 
 > **All commands run on k8s-lab-master — ~/kubernetes-3tier-app unless noted**

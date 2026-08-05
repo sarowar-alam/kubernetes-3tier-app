@@ -189,6 +189,32 @@ bash k8s-LoadBalancer-annotations/deploy.sh
   `status.loadBalancer.ingress[0].hostname` (a real DNS name, not an IP) for
   up to 180s while the controller provisions the NLB.
 
+### Manual deployment (without `deploy.sh`)
+
+Phase 0 and steps `[1/6]`–`[4/6]` (prerequisites, namespace, secrets,
+ECR secret, PostgreSQL, migrations, backend) are identical to
+[`k8s/README.md`'s Part 2](../k8s/README.md#part-2--deploy-without-automation-scripts-full-manual) —
+substitute `k8s/` with `k8s-LoadBalancer-annotations/` in every file path.
+Only the two phases below are unique to this variant:
+
+**`[5/6]` Verify the controller is installed (do not install it here)**
+```bash
+kubectl get deployment aws-load-balancer-controller -n kube-system
+# If NotFound: run Part 1 Steps 1-2 above first (local-machine IAM/subnet
+# setup, then install-controller.sh on the control-plane) — this is a
+# one-time, cluster-level prerequisite, not part of every deploy
+```
+
+**`[6/6]` Frontend + wait for the controller-provisioned NLB**
+```bash
+kubectl apply -f k8s-LoadBalancer-annotations/frontend/deployment.yaml
+kubectl apply -f k8s-LoadBalancer-annotations/frontend/service.yaml
+kubectl rollout status deployment/bmi-frontend -n bmi-app --timeout=90s
+
+# Poll until the controller assigns a real NLB DNS name (can take ~1-3 min)
+kubectl get svc bmi-frontend-svc -n bmi-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' -w
+```
+
 **Expected final output:**
 ```
 ✅ App URL: http://<generated>-<hash>.elb.ap-south-1.amazonaws.com/
@@ -341,6 +367,30 @@ finish, then deletes the rest of the app, uninstalls the
 aws-load-balancer-controller Helm release and cert-manager, and optionally
 the `bmi-app` namespace itself (prompts for confirmation — PVs use the
 `Retain` policy, so `/data/postgres` is never deleted by this).
+
+**Manual equivalent (without `teardown.sh`):**
+```bash
+NAMESPACE=bmi-app
+
+# 1. Frontend Service first — triggers the controller to deprovision the
+#    real NLB/target group/security groups. Wait for it to fully clear
+#    before touching the controller itself (see "stuck in Terminating" below).
+kubectl delete -f k8s-LoadBalancer-annotations/frontend/service.yaml --ignore-not-found=true
+kubectl get targetgroupbindings -n "$NAMESPACE"   # repeat until this returns none
+
+# 2. Rest of the app
+kubectl delete -f k8s-LoadBalancer-annotations/frontend/deployment.yaml --ignore-not-found=true
+kubectl delete job bmi-migrations -n "$NAMESPACE" --ignore-not-found=true
+kubectl delete -R -f k8s-LoadBalancer-annotations/backend/ --ignore-not-found=true
+kubectl delete -R -f k8s-LoadBalancer-annotations/postgres/ --ignore-not-found=true
+
+# 3. Controller + cert-manager
+helm uninstall aws-load-balancer-controller -n kube-system
+kubectl delete namespace cert-manager --ignore-not-found=true
+
+# 4. Namespace (optional — PVs survive via Retain)
+kubectl delete namespace "$NAMESPACE" --ignore-not-found=true
+```
 
 ### Step 2 — Local machine: IAM + subnet cleanup
 
