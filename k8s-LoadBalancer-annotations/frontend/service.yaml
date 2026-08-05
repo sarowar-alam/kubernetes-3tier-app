@@ -7,12 +7,11 @@ metadata:
     # Tells the AWS Load Balancer Controller to provision a real NLB for this
     # Service (instead of relying on MetalLB + a manually-created NLB, as the
     # k8s-LoadBalancer/ variant does). Requires the controller to be running
-    # in-cluster — see ../aws-lb-controller/install-alb-controller.sh.
+    # in-cluster — see ../aws-lb-controller/install-controller.sh.
     service.beta.kubernetes.io/aws-load-balancer-type: "external"
     service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "instance"
     service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
-    # CHANGE ME: your public subnet IDs (must be tagged kubernetes.io/role/elb=1)
-    service.beta.kubernetes.io/aws-load-balancer-subnets: "subnet-XXXXXXXX,subnet-YYYYYYYY"
+    service.beta.kubernetes.io/aws-load-balancer-subnets: "subnet-0b88d7678355c6163,subnet-092082346b72435a2"
     service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: "TCP"
     service.beta.kubernetes.io/aws-load-balancer-healthcheck-port: "traffic-port"
 spec:
