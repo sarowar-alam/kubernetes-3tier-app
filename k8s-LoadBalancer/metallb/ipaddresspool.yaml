@@ -1,0 +1,12 @@
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: bmi-pool
+  namespace: metallb-system
+spec:
+  # CHANGE ME: an unused range of private IPs inside your master node's public
+  # subnet CIDR (guessed here from the 10.0.10.34 master IP seen in k8s/README.md
+  # — verify it's actually free before using it, see README.md "Choosing the
+  # address pool range" for the exact aws cli commands to check).
+  addresses:
+    - 10.0.10.240-10.0.10.250

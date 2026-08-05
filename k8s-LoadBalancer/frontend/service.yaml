@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bmi-frontend-svc
+  namespace: bmi-app
+spec:
+  # LoadBalancer: fulfilled by MetalLB on this kubeadm cluster (no cloud
+  # controller-manager here) — MetalLB hands out a private VIP from the
+  # IPAddressPool defined in ../metallb/ipaddresspool.yaml. See README.md
+  # for how to make that VIP internet-reachable via an AWS NLB.
+  type: LoadBalancer
+  selector:
+    app: bmi-frontend
+  ports:
+    - port:       80
+      targetPort: 80
+      protocol:   TCP
