@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: bmi-app
+data:
+  NODE_ENV:     "production"
+  PORT:         "3000"
+  # Set to the AWS ALB Controller-provisioned NLB DNS name once created (see README.md) — CORS is moot since nginx proxies same-origin
+  FRONTEND_URL: "http://CHANGE-ME.elb.ap-south-1.amazonaws.com"

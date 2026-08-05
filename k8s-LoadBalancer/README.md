@@ -289,21 +289,32 @@ reaches whichever node is currently the "leader" for that VIP.
 
 **Important caveat:** the VIP MetalLB assigns is a **private IP inside your
 VPC subnet** — it is NOT internet-reachable by itself. To expose it publicly,
-this variant pairs MetalLB with a manually-created **AWS NLB using a
-target group of type `ip`**, pointing directly at the MetalLB VIP. The NLB
-gives you a real public DNS name; MetalLB's automatic node failover happens
-transparently underneath it (the NLB just keeps hitting the same VIP,
-regardless of which node currently owns it).
+this variant pairs MetalLB with a manually-created **AWS NLB**.
+
+> **The NLB target group points at the 3 nodes' real private IPs on the
+> frontend `NodePort` — NOT at the MetalLB VIP.** An NLB only routes to IPs
+> that AWS's VPC fabric actually knows about (real ENI-registered addresses).
+> The MetalLB VIP only becomes reachable via gratuitous ARP answered by
+> whichever node currently "owns" it — a trick that works for a regular EC2
+> instance's kernel (it participates in real ARP resolution), but the NLB is
+> a managed service with no such ARP resolution, so it can never actually
+> deliver a packet to the VIP. Registering it as a target will leave the
+> target permanently `unhealthy`. See [Design Decisions](#design-decisions-delta-from-k8sreadmemd)
+> below for the full explanation.
 
 Traffic flow:
 ```
 Browser → AWS NLB (manual, public DNS name)
-  └─ target group (type: ip) → MetalLB VIP (private, e.g. 10.0.10.24x)
-       └─ whichever node's speaker currently owns the VIP (L2/ARP)
-            └─ bmi-frontend-svc (LoadBalancer) → Nginx pod :80
+  └─ target group (type: ip) → node-1:32305, node-2:32305, node-3:32305
+       └─ kube-proxy on whichever node received the packet
+            └─ bmi-frontend-svc (LoadBalancer, NodePort 32305) → Nginx pod :80
                  └─ /api/* proxied → bmi-backend-svc:3000
                       └─ bmi-postgres-svc:5432 → PostgreSQL StatefulSet
 ```
+
+> The MetalLB `EXTERNAL-IP` itself is still assigned and still useful for
+> testing/access **from inside the VPC** (e.g. `curl` from another EC2
+> instance) — it's just not what the NLB targets.
 
 ---
 
@@ -960,27 +971,49 @@ first 4 and last 1 addresses of the CIDR block (AWS reserves those). Update
 
 ## Create the AWS Network Load Balancer (manual, one-time)
 
-Once `bmi-frontend-svc` has an `EXTERNAL-IP` from MetalLB:
+Once `bmi-frontend-svc` has an `EXTERNAL-IP` from MetalLB, find its `NodePort`
+first — you'll target that port on the nodes' real IPs, not the `EXTERNAL-IP`:
 
-1. **Target group** — type **IP**, protocol TCP (or HTTP), port **80**.
-   Register the MetalLB `EXTERNAL-IP` itself as the single target (not the
-   EC2 instances — the VIP already floats between nodes via MetalLB's own
-   failover, so the NLB doesn't need to know which node currently owns it).
-2. **Health check** — HTTP, path `/`, expect `200`.
+```bash
+kubectl get svc bmi-frontend-svc -n bmi-app
+# PORT(S) column looks like 80:32305/TCP — 32305 is the NodePort you need below
+```
+
+1. **Target group** — type **IP**, protocol TCP, port matching the NodePort
+   (e.g. `32305`). Register the **3 nodes' private IPs** as targets (master +
+   both workers), each on that same NodePort — **not** the MetalLB
+   `EXTERNAL-IP`. `kube-proxy` on every node forwards NodePort traffic to a
+   healthy frontend pod regardless of which node receives it, so any node
+   works as a target.
+2. **Health check** — TCP (or HTTP path `/`, expect `200`) on the NodePort
+   (`traffic-port` is fine — it reuses whatever port each target registers on).
 3. **Load balancer** — internet-facing **Network Load Balancer**, placed in
-   the public subnet (same VPC as the cluster — NLB target type `ip` requires
-   targets to be reachable from the LB's subnets).
-4. **Listener** — TCP/HTTP port `80` → forward to the target group above.
-5. **Security group** — ensure the instances' SG allows inbound TCP `80` from
-   the NLB (same VPC traffic, or the NLB's subnet CIDR if using a dedicated SG).
+   the public subnet(s) (same VPC as the cluster — NLB target type `ip`
+   requires targets to be reachable from the LB's subnets).
+4. **Listener** — TCP port `80` → forward to the target group above.
+5. **Security group** — ensure the instances' SG allows inbound TCP on the
+   NodePort (e.g. `32305`) from the NLB (same VPC traffic, or the NLB's
+   subnet CIDR if using a dedicated SG).
 6. **Test:**
    ```bash
    curl http://<NLB-DNS-NAME>/
    curl http://<NLB-DNS-NAME>/api/measurements
    ```
 
-> If the MetalLB `EXTERNAL-IP` ever changes (e.g. pool edited, Service
-> recreated), the NLB target group's registered IP must be updated to match.
+CLI equivalent (replace ARNs/IPs with your own — see `kubectl get nodes -o wide`
+for node private IPs):
+```bash
+aws elbv2 register-targets \
+  --target-group-arn <TARGET_GROUP_ARN> \
+  --targets Id=<MASTER_PRIVATE_IP>,Port=32305 Id=<WORKER1_PRIVATE_IP>,Port=32305 Id=<WORKER2_PRIVATE_IP>,Port=32305 \
+  --region ap-south-1
+```
+
+> The frontend `NodePort` value is stable across normal deploys (only changes
+> if the Service is deleted/recreated without `nodePort` pinned) — the target
+> group doesn't need updates for routine `deploy.sh`/`build-and-push.sh` runs.
+> It only needs updating if a **node** is replaced (new private IP) or the
+> Service's NodePort changes.
 
 Optionally update `FRONTEND_URL` in [`backend/configmap.yaml`](backend/configmap.yaml)
 to the NLB's DNS name — purely cosmetic, CORS is moot since nginx proxies
@@ -1116,6 +1149,18 @@ kubectl logs -n metallb-system -l app=metallb,component=controller --tail=100
 > (4) the range in `metallb/ipaddresspool.yaml` is actually free in your subnet
 > (see [Choosing the address pool range](#choosing-the-address-pool-range)).
 
+> **NLB target stuck `unhealthy` when targeting the MetalLB `EXTERNAL-IP`
+> directly?** This is expected — see the caveat under [Why MetalLB?](#why-metallb).
+> Fix: deregister the VIP target and register the 3 nodes' private IPs on the
+> frontend NodePort instead (see [Create the AWS Network Load Balancer](#create-the-aws-network-load-balancer-manual-one-time)).
+> Confirmed working sequence:
+> ```bash
+> aws elbv2 deregister-targets --target-group-arn <TG_ARN> --targets Id=<METALLB_VIP> --region ap-south-1
+> aws elbv2 register-targets --target-group-arn <TG_ARN> \
+>   --targets Id=<MASTER_IP>,Port=<NODEPORT> Id=<WORKER1_IP>,Port=<NODEPORT> Id=<WORKER2_IP>,Port=<NODEPORT> \
+>   --region ap-south-1
+> ```
+
 ---
 
 ## Design Decisions (delta from `k8s/README.md`)
@@ -1131,12 +1176,24 @@ BGP requires a BGP-speaking router peer, which plain AWS EC2 doesn't provide
 without extra infrastructure. L2 mode works out of the box on any flat subnet,
 including AWS VPC subnets, using ARP-based failover between nodes.
 
-**Why target type `ip` (pointing at the MetalLB VIP) instead of target type
-`instance` + NodePort (like `k8s-ingress/`)?**
-The MetalLB VIP already floats between nodes automatically — targeting it
-directly means the NLB target group never needs to know which physical node
-is currently serving traffic, matching how `Service type=LoadBalancer` is
-meant to behave.
+**Why target type `ip` + NodePort on the real node IPs, instead of the
+MetalLB VIP directly?**
+The MetalLB VIP looks like the more "native" target on paper — it floats
+between nodes automatically, so in theory the NLB would never need to know
+which physical node is serving traffic. In practice **this doesn't work**:
+an AWS NLB only routes to IPs its own VPC fabric can resolve via real
+ENI registration. MetalLB's L2 mode makes the VIP reachable purely through
+gratuitous ARP answered at the guest-OS level — something a normal EC2
+instance's kernel participates in (so a `curl` from another node succeeds),
+but the NLB (a managed service, not a kernel doing ARP) never can. Targeting
+the VIP leaves the NLB target permanently `unhealthy`.
+
+The fix that actually works: register the **3 nodes' real private IPs** on
+the frontend Service's `NodePort` instead. Those IPs are genuine,
+AWS-routable ENI addresses, and `kube-proxy` on any node forwards NodePort
+traffic to a healthy pod regardless of which node receives it — so the NLB
+doesn't need to track the MetalLB leader at all. The MetalLB VIP remains
+useful for testing/access from inside the VPC, just not as the NLB's target.
 
 ---
 
@@ -1153,7 +1210,7 @@ meant to behave.
 | ECR token lifetime | 12 hours — must refresh before deploying |
 | Secrets in git | Never — `postgres/secret.yaml` and `backend/secret.yaml` are .gitignored |
 | MetalLB IP pool | `metallb/ipaddresspool.yaml` — verify range is free in your subnet before deploying |
-| NLB target group | type `ip`, pointing at the MetalLB `EXTERNAL-IP` — update if the IP ever changes |
+| NLB target group | type `ip`, targeting the 3 nodes' private IPs on the frontend `NodePort` (not the MetalLB `EXTERNAL-IP` — see [Design Decisions](#design-decisions-delta-from-k8sreadmemd)) |
 
 ---
 

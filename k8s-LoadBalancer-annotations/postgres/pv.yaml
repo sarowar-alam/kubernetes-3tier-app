@@ -1,0 +1,29 @@
+# PersistentVolume — cluster-scoped (no namespace)
+# Pinned to the node labelled role=postgres-storage via nodeAffinity so data
+# survives pod reschedules. deploy.sh applies the label to whatever worker
+# node the operator specifies. The directory /data/postgres must exist on
+# that node (deploy.sh creates it automatically).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-pv
+  labels:
+    app: postgres
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /data/postgres
+    type: DirectoryOrCreate
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key:      role
+              operator: In
+              values:
+                - postgres-storage
