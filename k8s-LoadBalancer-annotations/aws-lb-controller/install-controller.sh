@@ -24,7 +24,7 @@
 set -euo pipefail
 
 CLUSTER_NAME="${CLUSTER_NAME:?Set CLUSTER_NAME to the same value used in setup-iam-and-subnets.sh}"
-VPC_ID="${VPC_ID:?Set VPC_ID to your cluster's VPC ID}"
+VPC_ID="${VPC_ID:?Set VPC_ID to your VPC ID}"
 AWS_REGION="${AWS_REGION:-ap-south-1}"
 CONTROLLER_VERSION="${CONTROLLER_VERSION:-1.8.1}"   # Helm chart appVersion — check https://github.com/kubernetes-sigs/aws-load-balancer-controller/releases
 

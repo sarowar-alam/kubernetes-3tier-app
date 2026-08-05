@@ -30,7 +30,7 @@ set -euo pipefail
 
 AWS_REGION="${AWS_REGION:-ap-south-1}"
 NODE_ROLE_NAME="${NODE_ROLE_NAME:?Set NODE_ROLE_NAME to your EC2 instance role name}"
-VPC_ID="${VPC_ID:?Set VPC_ID to your cluster's VPC ID}"
+VPC_ID="${VPC_ID:?Set VPC_ID to your VPC ID}"
 CLUSTER_NAME="${CLUSTER_NAME:?Set CLUSTER_NAME — an arbitrary identifier, e.g. bmi-k8s-lab}"
 PUBLIC_SUBNET_IDS="${PUBLIC_SUBNET_IDS:?Set PUBLIC_SUBNET_IDS as a space-separated list, e.g. \"subnet-xxxx subnet-yyyy\"}"
 POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
