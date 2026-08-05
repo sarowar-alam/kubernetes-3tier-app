@@ -41,8 +41,13 @@ echo " Region  : ${AWS_REGION}"
 echo "================================================"
 echo ""
 
-# ── 1. Install Helm if missing ────────────────────────────────────────────────
-echo "[1/5] Checking Helm..."
+# ── 1. Patch Node providerID (required for target registration) ─────────────
+echo "[1/6] Ensuring Node providerID is set (kubeadm clusters don't set this automatically)..."
+AWS_REGION="${AWS_REGION}" bash "$(dirname "${BASH_SOURCE[0]}")/patch-node-provider-ids.sh"
+echo ""
+
+# ── 2. Install Helm if missing ────────────────────────────────────────────────
+echo "[2/6] Checking Helm..."
 if command -v helm >/dev/null 2>&1; then
   echo "      ✅ Helm: $(helm version --short)"
 else
@@ -52,8 +57,8 @@ else
 fi
 echo ""
 
-# ── 2. Install cert-manager (webhook TLS dependency) ─────────────────────────
-echo "[2/5] Installing cert-manager (${CERT_MANAGER_VERSION})..."
+# ── 3. Install cert-manager (webhook TLS dependency) ─────────────────────────
+echo "[3/6] Installing cert-manager (${CERT_MANAGER_VERSION})..."
 kubectl apply -f "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml"
 echo "      Waiting for cert-manager pods to be ready (up to 120s)..."
 kubectl wait --for=condition=available deployment/cert-manager \
@@ -62,14 +67,14 @@ kubectl wait --for=condition=available deployment/cert-manager-webhook \
   -n cert-manager --timeout=120s
 echo ""
 
-# ── 3. Add the eks-charts Helm repo ───────────────────────────────────────────
-echo "[3/5] Adding eks-charts Helm repo..."
+# ── 4. Add the eks-charts Helm repo ───────────────────────────────────────────
+echo "[4/6] Adding eks-charts Helm repo..."
 helm repo add eks https://aws.github.io/eks-charts >/dev/null 2>&1 || true
 helm repo update >/dev/null
 echo ""
 
-# ── 4. Install the controller (self-managed cluster — no EKS API to auto-discover) ──
-echo "[4/5] Installing/upgrading aws-load-balancer-controller..."
+# ── 5. Install the controller (self-managed cluster — no EKS API to auto-discover) ──
+echo "[5/6] Installing/upgrading aws-load-balancer-controller..."
 HELM_ARGS=(
   upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller
   --namespace kube-system
@@ -89,8 +94,8 @@ kubectl rollout status deployment/aws-load-balancer-controller \
   -n kube-system --timeout=120s
 echo ""
 
-# ── 5. Verify ──────────────────────────────────────────────────────────────
-echo "[5/5] Controller pods:"
+# ── 6. Verify ──────────────────────────────────────────────────────────────
+echo "[6/6] Controller pods:"
 kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
 
 echo ""
