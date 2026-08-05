@@ -27,6 +27,9 @@ CLUSTER_NAME="${CLUSTER_NAME:?Set CLUSTER_NAME to the same value used in setup-i
 VPC_ID="${VPC_ID:?Set VPC_ID to your VPC ID}"
 AWS_REGION="${AWS_REGION:-ap-south-1}"
 CONTROLLER_VERSION="${CONTROLLER_VERSION:-1.8.1}"   # Helm chart appVersion — check https://github.com/kubernetes-sigs/aws-load-balancer-controller/releases
+# cert-manager 1.20+ requires k8s 1.32+ (CRD selectableFields field) — pin to the
+# latest 1.18.x patch, which supports k8s 1.29-1.33. Override if your cluster is newer.
+CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.18.6}"
 
 echo "================================================"
 echo " AWS Load Balancer Controller — Cluster-side Install"
@@ -48,8 +51,8 @@ fi
 echo ""
 
 # ── 2. Install cert-manager (webhook TLS dependency) ─────────────────────────
-echo "[2/5] Installing cert-manager..."
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+echo "[2/5] Installing cert-manager (${CERT_MANAGER_VERSION})..."
+kubectl apply -f "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml"
 echo "      Waiting for cert-manager pods to be ready (up to 120s)..."
 kubectl wait --for=condition=available deployment/cert-manager \
   -n cert-manager --timeout=120s
