@@ -38,7 +38,10 @@ kubectl delete -f k8s-LoadBalancer-annotations/frontend/service.yaml --ignore-no
 
 echo "      Waiting up to 120s for the NLB/target group/security groups to be deprovisioned..."
 for i in $(seq 1 24); do
-  if ! kubectl get targetgroupbindings -n "${NAMESPACE}" 2>/dev/null | grep -q bmi-frontend; then
+  # --request-timeout guards against this hanging forever on an unresponsive API server
+  REMAINING=$(kubectl get targetgroupbindings -n "${NAMESPACE}" --request-timeout=10s \
+    --no-headers 2>/dev/null | wc -l)
+  if [ "${REMAINING}" -eq 0 ]; then
     echo "      ✅ AWS resources deprovisioned"
     break
   fi
