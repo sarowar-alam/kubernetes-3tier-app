@@ -69,7 +69,7 @@ get_worker1_hostname() {
     read -rp "   Enter the Kubernetes node name of Worker-1: " WORKER1_HOSTNAME
     export WORKER1_HOSTNAME
   else
-    echo "   \u2705 Worker-1 node name: ${WORKER1_HOSTNAME}"
+    echo "   ✅ Worker-1 node name: ${WORKER1_HOSTNAME}"
   fi
 }
 

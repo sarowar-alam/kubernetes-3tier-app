@@ -112,12 +112,12 @@ echo "[1/8] Creating namespaces..."
 kubectl apply -f k8s-argocd/argocd/namespace.yaml
 kubectl apply -f k8s-argocd/app/namespace.yaml
 kubectl get ns "${NAMESPACE_ARGOCD}" "${NAMESPACE_APP}" --no-headers 2>/dev/null | \
-  awk '{print "  \u2705  namespace/" $1}'
+  awk '{print "  ✅  namespace/" $1}'
 
 # Label the storage node so YAML manifests can use a stable selector
 echo "      Labelling ${WORKER1_HOSTNAME} with role=postgres-storage..."
 kubectl label node "${WORKER1_HOSTNAME}" role=postgres-storage --overwrite
-echo "      \u2705  Node labelled"
+echo "      ✅  Node labelled"
 echo ""
 
 # 2. Apply gitignored secrets (one-time, manual step)
@@ -125,14 +125,14 @@ echo "[2/8] Applying secrets (gitignored — must exist locally)..."
 kubectl apply -f k8s-argocd/app/postgres/secret.yaml
 kubectl apply -f k8s-argocd/app/backend/secret.yaml
 kubectl get secret postgres-secret backend-secret -n "${NAMESPACE_APP}" --no-headers 2>/dev/null | \
-  awk '{print "  \u2705  secret/" $1 " (" $2 ")" }'
+  awk '{print "  ✅  secret/" $1 " (" $2 ")" }'
 echo ""
 
 # 3. Create PersistentVolume (cluster-scoped, not namespace-scoped)
 echo "[3/8] Creating PersistentVolume..."
 kubectl apply -f k8s-argocd/app/postgres/pv.yaml
 PV_STATUS=$(kubectl get pv postgres-pv --no-headers 2>/dev/null | awk '{print $5}')
-echo "  \u2705  postgres-pv status: ${PV_STATUS}"
+echo "  ✅  postgres-pv status: ${PV_STATUS}"
 echo ""
 
 # 4. Create worker-1 data directory via a temporary pod (no SSH or IAM required)
@@ -179,7 +179,7 @@ echo ""
 echo "[4.5/8] Creating ECR pull secret 'ecr-credentials'..."
 bash k8s-argocd/setup-ecr-secret.sh
 ECR_TYPE=$(kubectl get secret ecr-credentials -n "${NAMESPACE_APP}" --no-headers 2>/dev/null | awk '{print $3}')
-echo "  \u2705  ecr-credentials type: ${ECR_TYPE}"
+echo "  ✅  ecr-credentials type: ${ECR_TYPE}"
 echo ""
 
 # 5. Install ArgoCD (--server-side --force-conflicts handles both fresh installs
@@ -192,7 +192,7 @@ echo "      Waiting for ArgoCD server to be ready (up to 3 minutes)..."
 kubectl rollout status deployment/argocd-server \
   -n "${NAMESPACE_ARGOCD}" --timeout=180s
 RUNNING=$(kubectl get pods -n "${NAMESPACE_ARGOCD}" --no-headers 2>/dev/null | grep -c Running || true)
-echo "  \u2705  ${RUNNING}/7 ArgoCD pods Running"
+echo "  ✅  ${RUNNING}/7 ArgoCD pods Running"
 echo ""
 
 # 6. Expose ArgoCD UI via NodePort (no ingress required)
@@ -202,7 +202,7 @@ kubectl patch svc argocd-server -n "${NAMESPACE_ARGOCD}" \
 
 ARGOCD_PORT=30081
 PORTS=$(kubectl get svc argocd-server -n "${NAMESPACE_ARGOCD}" --no-headers 2>/dev/null | awk '{print $5}')
-echo "  \u2705  argocd-server ports: ${PORTS}"
+echo "  ✅  argocd-server ports: ${PORTS}"
 echo "      ArgoCD UI available at: http://${PUBLIC_IP}:${ARGOCD_PORT}"
 echo ""
 
