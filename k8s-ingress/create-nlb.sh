@@ -20,9 +20,9 @@
 #   export VPC_ID=vpc-0fb1f03806261b9ec
 #   export NODEPORT=30080
 #   export PUBLIC_SUBNET_IDS="subnet-0b88d7678355c6163 subnet-092082346b72435a2"
-#   export MASTER_ID=i-0bd050568c3d523b9
-#   export WORKER1_ID=i-01df20fa8c714ef58
-#   export WORKER2_ID=i-017fa44c2de4f6a2b
+#   export MASTER_ID=i-08011c9466e871ded
+#   export WORKER1_ID=i-0784d4c555c343934
+#   export WORKER2_ID=i-06623c94be6250861
 #   export NODES_SECURITY_GROUP_ID=sg-0daa5c936d47c169a
 #   bash k8s-ingress/create-nlb.sh
 #
@@ -42,6 +42,9 @@
 # =============================================================================
 
 set -euo pipefail
+
+# Git Bash (MSYS) rewrites bare '/' CLI args into Windows paths -- disable that.
+export MSYS_NO_PATHCONV=1
 
 AWS_PROFILE="${AWS_PROFILE:?Set AWS_PROFILE to your admin CLI profile}"
 AWS_REGION="${AWS_REGION:-ap-south-1}"
