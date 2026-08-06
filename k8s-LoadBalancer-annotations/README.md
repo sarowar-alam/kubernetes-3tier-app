@@ -1,444 +1,350 @@
-# BMI Health Tracker — LoadBalancer (AWS Load Balancer Controller) Variant
+# BMI Health Tracker — AWS Load Balancer Controller Variant
 
-This folder is an alternative to [`k8s-LoadBalancer/`](../k8s-LoadBalancer/README.md):
-same app, same `Service type=LoadBalancer` frontend, but instead of
-**MetalLB + a manually-created AWS NLB**, this variant installs the
-**[AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)**
-in-cluster. The controller watches the Service's annotations and calls the
-AWS API directly — `kubectl apply` alone provisions a *real* NLB, and
-`kubectl delete` tears it down. No manual target-group work, ever.
+Self-contained deployment guide for this folder only. Every command below is
+runnable using just the contents of `k8s-LoadBalancer-annotations/` — no
+other sibling `k8s-*` folder is required or referenced.
 
-> **Do not apply `k8s/`, `k8s-argocd/`, `k8s-ingress/`, `k8s-LoadBalancer/` and
-> `k8s-LoadBalancer-annotations/` to the same cluster at the same time.**
-> They share the same namespace (`bmi-app`), PostgreSQL hostPath
-> (`/data/postgres`) and node label (`role=postgres-storage`).
+## 1. Overview
 
----
+This folder deploys the **BMI Health Tracker**, a 3-tier web app, onto a
+self-managed `kubeadm` Kubernetes cluster on AWS EC2, and exposes it to the
+internet through a **real AWS Network Load Balancer (NLB) provisioned
+automatically by the AWS Load Balancer Controller** — driven purely by
+annotations on a Kubernetes `Service`, no manual AWS console clicking.
 
-## Why this variant exists
+**Tech stack**
 
-[`k8s-LoadBalancer/`](../k8s-LoadBalancer/README.md) works, but required a
-real production troubleshooting session to get there:
-
-- MetalLB's L2/ARP-announced VIP is reachable from **EC2 instances** (their
-  kernels do real ARP resolution), but an **AWS NLB cannot route to it** — the
-  NLB only knows about real, ENI-registered IPs. Pointing an NLB target group
-  at the MetalLB VIP leaves the target permanently `unhealthy`.
-- The working fix was to bypass MetalLB for the *public* path entirely:
-  register the 3 nodes' real private IPs on the frontend `NodePort` as NLB
-  targets instead — which then has to be **kept in sync by hand** whenever a
-  node is replaced.
-
-This variant removes that whole class of problem: the **AWS Load Balancer
-Controller** manages the NLB and its target group automatically, adding and
-removing real node IPs as the cluster changes — no MetalLB, no manual
-`register-targets`/`deregister-targets`, no VIP-vs-NLB ARP mismatch.
-
-Traffic flow:
-```
-Browser → AWS NLB (auto-provisioned by the controller, real public DNS name)
-  └─ target group (type: instance, auto-managed) → node NodePort
-       └─ kube-proxy on whichever node received the packet
-            └─ bmi-frontend-svc (LoadBalancer, NodePort) → Nginx pod :80
-                 └─ /api/* proxied → bmi-backend-svc:3000
-                      └─ bmi-postgres-svc:5432 → PostgreSQL StatefulSet
-```
-
----
-
-## What's different from `k8s-LoadBalancer/`
-
-| | `k8s-LoadBalancer/` | `k8s-LoadBalancer-annotations/` |
-|---|---|---|
-| LB provisioning | Manual (AWS Console/CLI, one-time) | Automatic (`kubectl apply` triggers it) |
-| Component providing `EXTERNAL-IP` | MetalLB (private VIP only) | AWS Load Balancer Controller (real NLB) |
-| NLB target group upkeep | Manual — re-run `register-targets` if a node changes | Automatic — controller reconciles targets continuously |
-| Extra cluster components | MetalLB (`metallb-system`) | AWS Load Balancer Controller + cert-manager (`kube-system`/`cert-manager`) |
-| Extra AWS setup | None beyond manual NLB creation | IAM policy on node role + subnet tagging (one-time) |
-| Failure mode this avoids | NLB→VIP ARP mismatch (see above) | N/A — targets real node IPs from the start |
-
----
-
-## Prerequisites
-
-Everything from [`k8s-LoadBalancer/README.md`'s Prerequisites](../k8s-LoadBalancer/README.md#prerequisites)
-section applies here too (Docker, AWS CLI, ECR repos, IAM role for ECR
-pulls, `/data/postgres` on a worker node, etc.) — refer to it for those
-steps. This section only covers what's **additionally** required for the
-AWS Load Balancer Controller.
-
-### 1. Find your node IAM role name
-
-```bash
-aws ec2 describe-instances --instance-ids <any-node-instance-id> \
-  --profile sarowar-ostad --region ap-south-1 \
-  --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text
-# arn:aws:iam::388779989543:instance-profile/<profile-name>
-
-aws iam get-instance-profile --instance-profile-name <profile-name> \
-  --profile sarowar-ostad \
-  --query 'InstanceProfile.Roles[0].RoleName' --output text
-```
-
-### 2. Find your public subnet IDs and VPC ID
-
-```bash
-aws ec2 describe-subnets --region ap-south-1 --profile sarowar-ostad \
-  --filters "Name=vpc-id,Values=<your-vpc-id>" \
-  --query "Subnets[].{Id:SubnetId,AZ:AvailabilityZone,CIDR:CidrBlock}" --output table
-```
-Pick the subnet(s) your control-plane node (and any node you want the NLB
-reachable from) actually lives in.
-
----
-
-## Part 1 — One-time AWS Load Balancer Controller setup
-
-### Step 1 — Local machine: IAM policy + subnet tagging
-
-> **Directory: local machine — kubernetes-3tier-app/**
-
-```bash
-AWS_PROFILE=sarowar-ostad \
-NODE_ROLE_NAME=<role-name-from-prerequisites> \
-VPC_ID=<your-vpc-id> \
-CLUSTER_NAME=bmi-k8s-lab \
-PUBLIC_SUBNET_IDS="<subnet-id-1> <subnet-id-2>" \
-bash k8s-LoadBalancer-annotations/aws-lb-controller/setup-iam-and-subnets.sh
-```
-
-This creates the `AWSLoadBalancerControllerIAMPolicy` IAM policy (from
-[`aws-lb-controller/iam-policy.json`](aws-lb-controller/iam-policy.json)),
-attaches it to your existing node role (the same role all 3 EC2 instances
-already use for ECR pulls), and tags your public subnets with
-`kubernetes.io/role/elb=1` + `kubernetes.io/cluster/<name>=owned` so the
-controller can auto-discover where to place the NLB.
-
-### Step 2 — Control-plane: install the controller
-
-> **Directory: k8s-lab-master — ~/kubernetes-3tier-app**
-
-```bash
-git pull
-CLUSTER_NAME=bmi-k8s-lab VPC_ID=<your-vpc-id> AWS_REGION=ap-south-1 \
-bash k8s-LoadBalancer-annotations/aws-lb-controller/install-controller.sh
-```
-
-This runs 6 phases:
-1. **Patches `Node.spec.providerID`** on every node (see
-   ["Why does `patch-node-provider-ids.sh` exist?"](#why-does-patch-node-provider-idssh-exist-and-do-i-always-need-it)
-   below) via [`patch-node-provider-ids.sh`](aws-lb-controller/patch-node-provider-ids.sh).
-2. Installs Helm (if missing).
-3. Installs **cert-manager `v1.18.6`** (pinned — see note below) — the
-   controller's webhook TLS dependency.
-4. Adds the `eks-charts` Helm repo.
-5. Installs/upgrades the controller via Helm, using manual
-   `clusterName`/`vpcId`/`region` flags since this is a self-managed kubeadm
-   cluster, not real EKS (no control-plane API to auto-discover these values
-   from), then force-restarts the Deployment so it always resyncs against the
-   latest Node state from step 1.
-6. Verifies the controller pods are `Running`.
-
-> **cert-manager is pinned to `v1.18.6`, not "latest".** cert-manager v1.20+
-> requires Kubernetes 1.32+ (a CRD `selectableFields` feature) and fails with
-> a strict-decoding error on this cluster's Kubernetes 1.29. v1.18.x is the
-> latest branch still compatible with 1.29. Override with
-> `CERT_MANAGER_VERSION=vX.Y.Z` if you upgrade the cluster later.
-
-> **The controller image tag is *not* pinned** — `CONTROLLER_VERSION` is
-> empty by default, so Helm uses the `eks-charts` chart's own `appVersion`
-> default, which is always a valid, existing image. (An earlier version of
-> this script hardcoded `v1.8.1`, which doesn't exist — that numbering
-> belongs to the older `alb-ingress-controller`, not
-> `aws-load-balancer-controller`. Only set `CONTROLLER_VERSION` if you need
-> a specific controller version, e.g. `v2.13.0`.)
-
-**Verify:**
-```bash
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
-# Expect 2 Running pods
-```
-
-### Step 3 — Fill in your subnet IDs
-
-Edit [`frontend/service.yaml`](frontend/service.yaml) and replace the
-placeholder in the `aws-load-balancer-subnets` annotation with your real
-public subnet IDs from the Prerequisites step:
-```yaml
-service.beta.kubernetes.io/aws-load-balancer-subnets: "subnet-XXXXXXXX,subnet-YYYYYYYY"
-```
-Commit this change before running `deploy.sh` — the controller reads it
-directly from the Service object at apply time.
-
----
-
-## Part 2 — Deploy the app
-
-> **Directory: k8s-lab-master — ~/kubernetes-3tier-app**
-
-```bash
-bash k8s-LoadBalancer-annotations/deploy.sh
-```
-
-`deploy.sh` follows the same 6-phase flow as `k8s-LoadBalancer/deploy.sh`
-(Phase 0 prerequisites, then `[1/6]`–`[6/6]`), except:
-- `[5/6]` **checks** that the AWS Load Balancer Controller is installed
-  (fails fast with instructions if it isn't — it doesn't install it, since
-  that requires the local-machine IAM step first).
-- `[6/6]` applies the frontend `Service`/`Deployment` and polls
-  `status.loadBalancer.ingress[0].hostname` (a real DNS name, not an IP) for
-  up to 180s while the controller provisions the NLB.
-
-### Manual deployment (without `deploy.sh`)
-
-Phase 0 and steps `[1/6]`–`[4/6]` (prerequisites, namespace, secrets,
-ECR secret, PostgreSQL, migrations, backend) are identical to
-[`k8s/README.md`'s Part 2](../k8s/README.md#part-2--deploy-without-automation-scripts-full-manual) —
-substitute `k8s/` with `k8s-LoadBalancer-annotations/` in every file path.
-Only the two phases below are unique to this variant:
-
-**`[5/6]` Verify the controller is installed (do not install it here)**
-```bash
-kubectl get deployment aws-load-balancer-controller -n kube-system
-# If NotFound: run Part 1 Steps 1-2 above first (local-machine IAM/subnet
-# setup, then install-controller.sh on the control-plane) — this is a
-# one-time, cluster-level prerequisite, not part of every deploy
-```
-
-**`[6/6]` Frontend + wait for the controller-provisioned NLB**
-```bash
-kubectl apply -f k8s-LoadBalancer-annotations/frontend/deployment.yaml
-kubectl apply -f k8s-LoadBalancer-annotations/frontend/service.yaml
-kubectl rollout status deployment/bmi-frontend -n bmi-app --timeout=90s
-
-# Poll until the controller assigns a real NLB DNS name (can take ~1-3 min)
-kubectl get svc bmi-frontend-svc -n bmi-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' -w
-```
-
-**Expected final output:**
-```
-✅ App URL: http://<generated>-<hash>.elb.ap-south-1.amazonaws.com/
-```
-That URL is immediately internet-reachable — no NLB/target-group step needed.
-
----
-
-## Update Workflow (Every Code Change)
-
-Same as [`k8s-LoadBalancer/`'s Update Workflow](../k8s-LoadBalancer/README.md#update-workflow-every-code-change):
-
-```bash
-# Local machine
-bash k8s-LoadBalancer-annotations/build-and-push.sh
-
-# Control-plane
-git pull && bash k8s-LoadBalancer-annotations/deploy.sh
-```
-
-The NLB and its target group are **fully managed by the controller** — no
-manual re-registration ever needed, even if a node is replaced.
-
----
-
-## Useful Commands
-
-```bash
-# Controller health and logs (check here first if the NLB never appears)
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
-kubectl logs -n kube-system deploy/aws-load-balancer-controller --tail=100
-
-# Frontend Service — hostname appears once the NLB is provisioned
-kubectl get svc bmi-frontend-svc -n bmi-app -w
-
-# Describe the Service — shows controller reconcile events if something's wrong
-kubectl describe svc bmi-frontend-svc -n bmi-app
-```
-
-**NLB never gets a hostname?** Check, in order: (1) controller pods are
-`Running` (`kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller`),
-(2) controller logs for IAM permission errors (`AccessDenied` means the
-policy from Step 1 isn't attached to the right role), (3) the subnet IDs in
-`frontend/service.yaml`'s annotation actually exist and are tagged
-(`kubernetes.io/role/elb=1`), (4) `kubectl describe svc bmi-frontend-svc -n bmi-app`
-for reconcile error events.
-
-**NLB gets a hostname but the target group has zero registered targets?**
-Check the controller logs for `providerID is not specified for node: <name>`:
-```bash
-kubectl logs -n kube-system deploy/aws-load-balancer-controller --tail=200 | grep providerID
-```
-This means `install-controller.sh`'s step `[1/6]` didn't run (or ran before
-the node existed — e.g. a node added after the initial install). Fix:
-```bash
-AWS_REGION=ap-south-1 bash k8s-LoadBalancer-annotations/aws-lb-controller/patch-node-provider-ids.sh
-kubectl rollout restart deployment/aws-load-balancer-controller -n kube-system
-```
-The explicit `rollout restart` matters: the controller does not always
-promptly re-reconcile `TargetGroupBinding`s just because a Node object was
-patched in the background — a restart forces it to resync immediately
-instead of waiting for its next periodic reconcile.
-
----
-
-## Design Decisions
-
-**Why the AWS Load Balancer Controller instead of fixing `k8s-LoadBalancer/`'s
-manual NLB?**
-Both reach the same end state (a real, internet-facing NLB fronting the
-app), but this variant demonstrates the more "cloud-native" pattern closer
-to what EKS gives you by default — the controller is the same one EKS users
-install (or get pre-installed via EKS add-ons). Keeping `k8s-LoadBalancer/`
-unchanged preserves it as the "manual, understand every AWS API call"
-teaching variant; this folder is the "automate it properly" follow-up.
-
-**Why `aws-load-balancer-nlb-target-type: instance` instead of `ip`?**
-`instance` target type registers the actual EC2 instances on the Service's
-NodePort automatically — conceptually identical to the manual fix applied
-in `k8s-LoadBalancer/` (register real node IPs, not a floating VIP), except
-the controller keeps it in sync automatically as nodes join/leave.
-
-**Why is MetalLB not used here at all?**
-It's unnecessary — the controller talks to the real AWS API to provision a
-real NLB directly, so there's no need for an in-cluster VIP mechanism to
-bridge the "no cloud-controller-manager" gap. MetalLB's job (giving
-`type=LoadBalancer` Services a working `EXTERNAL-IP`) is fully replaced by
-the controller's own reconciliation.
-
-**Why is IAM policy attachment a separate, local-machine-only script?**
-Attaching a permissive IAM policy to a role is itself a privileged
-operation — it should be done with your own admin AWS credentials, not
-from a script running on the cluster nodes.
-
-**Why does `patch-node-provider-ids.sh` exist, and do I always need it?**
-Yes — keep it. This is a **kubeadm/self-managed cluster with no
-cloud-controller-manager**, so kubelet never populates `Node.spec.providerID`.
-The AWS Load Balancer Controller's `TargetGroupBinding` reconciler requires
-this field to resolve a Node to an EC2 instance ID for target registration —
-without it, the target group stays permanently empty (`providerID is not
-specified for node: ...` in the controller logs). It's not a one-off
-workaround for a bug that got fixed; it's a permanent, structural gap on any
-cluster without a cloud-controller-manager. It's already wired into
-`install-controller.sh` as step `[1/6]` (idempotent — skips nodes that
-already have a `providerID`), so normal installs/reinstalls need no extra
-steps. You only need to run it standalone if you add a **new node** to an
-already-running cluster — in that case, also `rollout restart` the
-controller afterward (see the troubleshooting note above).
-
----
-
-## Reference
-
-| Item | Value |
+| Layer | Technology |
 |---|---|
-| App URL | Real AWS NLB DNS name — appears automatically in `kubectl get svc bmi-frontend-svc -n bmi-app` |
-| ECR registry | 388779989543.dkr.ecr.ap-south-1.amazonaws.com |
-| Kubernetes namespace | bmi-app |
-| PostgreSQL data path | `/data/postgres` on the node labelled `role=postgres-storage` |
-| PV reclaim policy | Retain — data not deleted on pod/PVC deletion |
-| Image tag strategy | git short SHA — unique per commit |
-| ECR token lifetime | 12 hours — must refresh before deploying |
-| Extra IAM policy | `AWSLoadBalancerControllerIAMPolicy`, attached to the shared node role |
-| Extra cluster components | cert-manager `v1.18.6` (pinned), aws-load-balancer-controller (both in scope beyond `k8s-LoadBalancer/`) |
-| NLB target group | type `instance`, auto-managed by the controller — no manual updates ever |
-| Node `providerID` | Patched automatically by `install-controller.sh` step `[1/6]` — required since this cluster has no cloud-controller-manager |
-| Teardown | `teardown.sh` (control-plane) + `aws-lb-controller/teardown-iam-and-subnets.sh` (local machine) — see [Teardown](#teardown) |
+| Frontend | React 18 + Vite, served by Nginx (proxies `/api/*` to the backend) |
+| Backend | Node.js 18 + Express, `pg` driver |
+| Database | PostgreSQL (StatefulSet, hostPath-backed PersistentVolume) |
+| Container registry | AWS ECR (`bmi-backend`, `bmi-frontend` repos) |
+| Cluster | kubeadm (containerd runtime), 1 control-plane + 2 workers, self-managed on EC2 (no EKS) |
+| Ingress/exposure | `Service type: LoadBalancer` + **AWS Load Balancer Controller** (Helm) + **cert-manager** (webhook TLS dependency) |
+| Image pull auth | EC2 instance-profile role (`SSM`) via ECR credential provider / imagePullSecret |
+
+**Architecture / traffic flow**
+
+```mermaid
+flowchart LR
+    U["Internet user"] -->|"HTTP"| NLB["AWS Network Load Balancer<br/>(auto-provisioned)"]
+    NLB --> FE["bmi-frontend-svc<br/>type: LoadBalancer<br/>Nginx pod :80"]
+    FE -->|"/api/*"| BE["bmi-backend-svc<br/>ClusterIP :3000<br/>Express pod"]
+    BE --> PG["bmi-postgres-svc<br/>ClusterIP :5432<br/>PostgreSQL StatefulSet"]
+    PG --> PV["hostPath PV<br/>/data/postgres on worker-1"]
+
+    subgraph "kube-system"
+      LBC["aws-load-balancer-controller<br/>(Helm, watches Service annotations)"]
+      CM["cert-manager<br/>(webhook TLS)"]
+    end
+    LBC -.->|"creates/updates via AWS API"| NLB
+    CM -.->|"issues webhook certs for"| LBC
+```
+
+```mermaid
+flowchart TB
+    subgraph AWS["AWS EC2 (kubeadm cluster, no cloud-controller-manager)"]
+      M["Control-plane node<br/>(public subnet)"]
+      W1["Worker-1<br/>hosts /data/postgres<br/>label: role=postgres-storage"]
+      W2["Worker-2"]
+    end
+    M --- W1
+    M --- W2
+```
+
+## 2. Focus of this folder
+
+This variant's sole focus is: **3-tier app + Service `type: LoadBalancer`
+fulfilled by the AWS Load Balancer Controller**, so that Kubernetes itself
+(not a human) provisions and keeps in sync a real internet-facing AWS NLB —
+including target registration/deregistration as pods/nodes change.
+
+Out of scope here: Ingress path-based routing (see the ingress variant),
+MetalLB (see the LoadBalancer/MetalLB variant), TLS termination/certificates
+for the *app* itself (cert-manager here is only a controller-internal
+dependency, not used for the app's HTTP endpoint), GitOps/ArgoCD.
+
+## 3. What is the AWS Load Balancer Controller, and why here?
+
+A `kubeadm` cluster on plain EC2 has **no cloud-controller-manager**, so
+Kubernetes has no native way to satisfy `Service type: LoadBalancer` — it
+would stay `Pending` forever. The **AWS Load Balancer Controller** is a
+controller you install yourself (via Helm) that watches `Service`/`Ingress`
+objects and calls the AWS API directly to create/update/delete a real
+NLB/ALB and its target group, keyed off annotations like
+`service.beta.kubernetes.io/aws-load-balancer-type`.
+
+**Benefits**
+- No manual AWS console/CLI step to create the load balancer or manage its
+  target group — the controller registers/deregisters EC2 instances as
+  targets automatically as nodes come and go.
+- A single declarative Service manifest fully describes the desired AWS
+  load balancer (scheme, subnets, health check).
+- Closest to how a managed EKS cluster would behave, without EKS.
+
+**Costs / trade-offs**
+- Non-trivial one-time setup: IAM policy, subnet tagging, cert-manager,
+  Helm chart, and (unique to self-managed kubeadm) manually patching
+  `Node.spec.providerID` — none of this is needed on EKS, where it's built
+  in.
+- Extra moving parts running in the cluster (cert-manager + the controller
+  pod) that must stay healthy for load-balancer reconciliation to keep
+  working.
+- `deploy.sh` in this folder **refuses to proceed** if the controller isn't
+  already installed — it is a hard prerequisite, not optional.
+
+Compared to the plain NodePort variant (simplest, but one raw port on every
+node, no managed AWS resource) and the MetalLB variant (gives an
+in-cluster EXTERNAL-IP but still needs a human to create the AWS NLB
+pointing at it), this variant is the only one where Kubernetes manages the
+real AWS load balancer end-to-end.
+
+## 4. Implementation
+
+### Prerequisites (apply to both A and B)
+
+- A running kubeadm cluster (control-plane + ≥1 worker), e.g. provisioned by
+  `provision-k8s-cluster.sh` from the `kubernetes-fundamentals` repo. That
+  script writes `./k8s-cluster-state.env` on your **local laptop** with
+  `MASTER_PUB_IP`, `MASTER_PRIV_IP`, `WORKER1_PRIV_IP`, `WORKER2_PRIV_IP`,
+  `AWS_REGION`, `AWS_PROFILE` — source it (`source ./k8s-cluster-state.env`)
+  wherever a command below needs one of those values. If you don't have that
+  file, get the same information with:
+  ```bash
+  # on your laptop
+  aws sts get-caller-identity --profile sarowar-ostad
+  # on the master node
+  kubectl get nodes -o wide
+  ```
+- All 3 EC2 instances share one IAM instance-profile **role — by convention
+  named `SSM`** in this setup. Confirm its name once:
+  ```bash
+  # on your laptop, profile sarowar-ostad
+  aws ec2 describe-instances --instance-ids <any-node-instance-id> \
+    --profile sarowar-ostad \
+    --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text
+  aws iam list-instance-profiles --profile sarowar-ostad \
+    --query "InstanceProfiles[?Arn=='<arn-from-above>'].Roles[0].RoleName" --output text
+  ```
+- **Manual, one-time, cannot be automated by any script here:** attach the
+  AWS-managed policy `AmazonEC2ContainerRegistryReadOnly` to that role so
+  the nodes can pull images from ECR:
+  ```bash
+  # on your laptop, profile sarowar-ostad
+  aws iam attach-role-policy --role-name SSM \
+    --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly \
+    --profile sarowar-ostad
+  ```
+- Clone this repository **on the control-plane node** — every manual command
+  below assumes you're running it from the repo root there:
+  ```bash
+  # on the master node
+  git clone https://github.com/sarowar-alam/kubernetes-3tier-app.git
+  cd kubernetes-3tier-app
+  ```
+- Docker images already built and pushed to ECR (`bmi-backend`,
+  `bmi-frontend` repos) — from your laptop:
+  ```bash
+  # on your laptop
+  bash k8s-LoadBalancer-annotations/build-and-push.sh
+  ```
 
 ---
 
-## Teardown
+### A. With the automation script
 
-Deleting the AWS Load Balancer Controller (or the cluster) *before* removing
-the app's Service would orphan the real NLB, target group, and the two
-controller-managed security groups in your AWS account — they're only
-cleaned up when the controller sees the owning Service get deleted. Use the
-two teardown scripts in this order:
+1. **AWS-side, one-time, run from your local laptop** (not the cluster —
+   this needs IAM/EC2 admin permissions beyond the node's own role):
+   ```bash
+   # on your laptop, profile sarowar-ostad
+   AWS_PROFILE=sarowar-ostad \
+   NODE_ROLE_NAME=SSM \
+   VPC_ID=$(aws ec2 describe-vpcs --profile sarowar-ostad \
+              --query "Vpcs[0].VpcId" --output text) \
+   CLUSTER_NAME=bmi-k8s-lab \
+   PUBLIC_SUBNET_IDS="<public-subnet-id-1> <public-subnet-id-2>" \
+   bash k8s-LoadBalancer-annotations/aws-lb-controller/setup-iam-and-subnets.sh
+   ```
+   This creates IAM policy `AWSLoadBalancerControllerIAMPolicy`, attaches it
+   to role `SSM`, and tags your public subnets
+   (`kubernetes.io/role/elb=1`, `kubernetes.io/cluster/<name>=owned`) so the
+   controller knows where it may place an internet-facing NLB.
 
-### Step 1 — Control-plane: app + controller
+2. **Cluster-side, one-time, run on the control-plane node:**
+   ```bash
+   # on the master node
+   CLUSTER_NAME=bmi-k8s-lab VPC_ID=<same-vpc-id-as-above> AWS_REGION=ap-south-1 \
+   bash k8s-LoadBalancer-annotations/aws-lb-controller/install-controller.sh
+   ```
+   This patches every Node's `providerID` (required for target
+   registration on a kubeadm cluster — see script comments), installs Helm
+   if missing, installs cert-manager, then installs the
+   `aws-load-balancer-controller` Helm chart into `kube-system`.
 
-> **Directory: k8s-lab-master — ~/kubernetes-3tier-app**
+3. **Fill in real subnet IDs** in
+   `k8s-LoadBalancer-annotations/frontend/service.yaml` under the
+   `service.beta.kubernetes.io/aws-load-balancer-subnets` annotation (comma
+   separated, must be the same public subnets tagged in step 1).
+
+4. **Deploy everything else — run on the control-plane node:**
+   ```bash
+   # on the master node
+   bash k8s-LoadBalancer-annotations/deploy.sh
+   ```
+   First run prompts for the worker's private IP (hosting `/data/postgres`)
+   and a PostgreSQL password; it then creates the namespace, labels the
+   storage node, creates secrets, refreshes the ECR pull secret, deploys
+   PostgreSQL → migrations → backend, **checks the controller is installed
+   (exits with instructions if not — that's why steps 1–3 must come
+   first)**, then deploys the frontend and waits for the controller to
+   provision the NLB. Subsequent runs are idempotent.
+
+5. **Get the app URL:**
+   ```bash
+   # on the master node
+   kubectl get svc bmi-frontend-svc -n bmi-app \
+     -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+   ```
+
+---
+
+### B. Fully manual (no `deploy.sh`)
+
+Run all of these **on the control-plane node**, inside the cloned repo
+(`kubernetes-3tier-app/`), unless marked "on your laptop".
+
+1. **AWS-side prerequisite (on your laptop, profile `sarowar-ostad`)** — do
+   steps 1–3 from Part A first (IAM policy + subnet tagging, then controller
+   install on the master, then fill in subnet IDs). These are hard
+   prerequisites; the app's frontend Service cannot get a real NLB without
+   them.
+
+2. **Namespace:**
+   ```bash
+   kubectl apply -f k8s-LoadBalancer-annotations/namespace.yaml
+   ```
+
+3. **Storage node label** — find the worker that will host `/data/postgres`
+   and label it (needed by `pv.yaml`/`statefulset.yaml` node affinity):
+   ```bash
+   kubectl get nodes -o wide
+   kubectl label node <worker-1-node-name> role=postgres-storage --overwrite
+   ```
+
+4. **Create `/data/postgres` on that worker** (SSH from the master, or run
+   the equivalent commands if you're already on that node):
+   ```bash
+   ssh ubuntu@<worker-1-private-ip> "sudo mkdir -p /data/postgres && sudo chmod 777 /data/postgres"
+   ```
+
+5. **Secrets** (`postgres-secret` used by the StatefulSet, `backend-secret`
+   with the resulting connection string):
+   ```bash
+   kubectl create secret generic postgres-secret \
+     --from-literal=POSTGRES_DB=bmidb \
+     --from-literal=POSTGRES_USER=bmi_user \
+     --from-literal=POSTGRES_PASSWORD='<choose-a-password>' \
+     --namespace=bmi-app
+
+   kubectl create secret generic backend-secret \
+     --from-literal=DATABASE_URL='postgres://bmi_user:<same-password>@bmi-postgres-svc:5432/bmidb' \
+     --namespace=bmi-app
+   ```
+
+6. **ECR image-pull secret** (expires every 12h — re-run whenever it's
+   stale):
+   ```bash
+   bash k8s-LoadBalancer-annotations/setup-ecr-secret.sh
+   ```
+
+7. **PostgreSQL:**
+   ```bash
+   kubectl apply -f k8s-LoadBalancer-annotations/postgres/pv.yaml
+   kubectl apply -f k8s-LoadBalancer-annotations/postgres/pvc.yaml
+   kubectl apply -f k8s-LoadBalancer-annotations/postgres/statefulset.yaml
+   kubectl apply -f k8s-LoadBalancer-annotations/postgres/service.yaml
+   kubectl wait --for=condition=ready pod -l app=postgres -n bmi-app --timeout=120s
+   ```
+
+8. **Database migrations:**
+   ```bash
+   kubectl apply -f k8s-LoadBalancer-annotations/postgres/migrations-configmap.yaml
+   kubectl delete job bmi-migrations -n bmi-app --ignore-not-found=true
+   kubectl apply -f k8s-LoadBalancer-annotations/postgres/migration-job.yaml
+   kubectl wait --for=condition=complete job/bmi-migrations -n bmi-app --timeout=90s
+   ```
+
+9. **Backend:**
+   ```bash
+   kubectl apply -f k8s-LoadBalancer-annotations/backend/configmap.yaml
+   kubectl apply -f k8s-LoadBalancer-annotations/backend/deployment.yaml
+   kubectl apply -f k8s-LoadBalancer-annotations/backend/service.yaml
+   kubectl rollout status deployment/bmi-backend -n bmi-app --timeout=90s
+   ```
+
+10. **Frontend Service (annotated for a real AWS NLB) + Deployment** —
+    confirm the subnet IDs in
+    `k8s-LoadBalancer-annotations/frontend/service.yaml` are correct for
+    your VPC's public subnets, then:
+    ```bash
+    kubectl apply -f k8s-LoadBalancer-annotations/frontend/deployment.yaml
+    kubectl apply -f k8s-LoadBalancer-annotations/frontend/service.yaml
+    kubectl rollout status deployment/bmi-frontend -n bmi-app --timeout=90s
+    ```
+
+11. **Wait for the controller to provision the NLB** (takes ~2–3 minutes the
+    first time):
+    ```bash
+    kubectl get svc bmi-frontend-svc -n bmi-app -w
+    # EXTERNAL-IP column becomes the NLB's DNS hostname once ready
+    ```
+
+## 5. Teardown
+
+### Step 1 — cluster-side (run on the control-plane node)
+
+This uses the node's own instance-profile role (`SSM`) — no AWS CLI profile
+needed here, `kubectl`/`helm` only:
 
 ```bash
 bash k8s-LoadBalancer-annotations/teardown.sh
 ```
 
-Deletes the frontend `Service` first (triggers the controller to
-deprovision the NLB/target group/security groups), waits for that to
-finish, then deletes the rest of the app, uninstalls the
-aws-load-balancer-controller Helm release and cert-manager, and optionally
-the `bmi-app` namespace itself (prompts for confirmation — PVs use the
-`Retain` policy, so `/data/postgres` is never deleted by this).
+This, in order: deletes the frontend `Service` first (so the controller
+deprovisions the real NLB/target group/security groups it created — deleting
+anything else first would orphan those AWS resources), waits for that
+cleanup to finish, deletes the rest of the app resources (frontend
+Deployment, migration Job, backend, postgres — the PV's `Retain` policy
+means `/data/postgres` itself survives), uninstalls the
+`aws-load-balancer-controller` Helm release and the `cert-manager`
+namespace, and optionally deletes the `bmi-app` namespace.
 
-**Manual equivalent (without `teardown.sh`):**
-```bash
-NAMESPACE=bmi-app
+### Step 2 — AWS-side (run from your local laptop, profile `sarowar-ostad`)
 
-# 1. Frontend Service first — triggers the controller to deprovision the
-#    real NLB/target group/security groups. Wait for it to fully clear
-#    before touching the controller itself (see "stuck in Terminating" below).
-kubectl delete -f k8s-LoadBalancer-annotations/frontend/service.yaml --ignore-not-found=true
-kubectl get targetgroupbindings -n "$NAMESPACE"   # repeat until this returns none
-
-# 2. Rest of the app
-kubectl delete -f k8s-LoadBalancer-annotations/frontend/deployment.yaml --ignore-not-found=true
-kubectl delete job bmi-migrations -n "$NAMESPACE" --ignore-not-found=true
-kubectl delete -R -f k8s-LoadBalancer-annotations/backend/ --ignore-not-found=true
-kubectl delete -R -f k8s-LoadBalancer-annotations/postgres/ --ignore-not-found=true
-
-# 3. Controller + cert-manager
-helm uninstall aws-load-balancer-controller -n kube-system
-kubectl delete namespace cert-manager --ignore-not-found=true
-
-# 4. Namespace (optional — PVs survive via Retain)
-kubectl delete namespace "$NAMESPACE" --ignore-not-found=true
-```
-
-### Step 2 — Local machine: IAM + subnet cleanup
-
-> **Directory: local machine — kubernetes-3tier-app/**
+Run this only after step 1 has finished, so the NLB/target group/security
+groups it references are already gone:
 
 ```bash
+# on your laptop, profile sarowar-ostad
 AWS_PROFILE=sarowar-ostad \
-NODE_ROLE_NAME=<role-name> \
-PUBLIC_SUBNET_IDS="<subnet-id-1> <subnet-id-2>" \
+NODE_ROLE_NAME=SSM \
+PUBLIC_SUBNET_IDS="<public-subnet-id-1> <public-subnet-id-2>" \
 CLUSTER_NAME=bmi-k8s-lab \
 bash k8s-LoadBalancer-annotations/aws-lb-controller/teardown-iam-and-subnets.sh
 ```
 
-Detaches and deletes the `AWSLoadBalancerControllerIAMPolicy` (only if no
-other role still uses it) and removes the `kubernetes.io/role/elb` /
-`kubernetes.io/cluster/<name>` tags from the public subnets. Both scripts
-prompt for explicit `yes` confirmation before making changes since they
-delete real AWS resources.
+This detaches (and deletes, if unused elsewhere) the
+`AWSLoadBalancerControllerIAMPolicy` from role `SSM`, and removes the
+`kubernetes.io/role/elb` / `kubernetes.io/cluster/<name>` tags from the
+public subnets — reversing exactly what `setup-iam-and-subnets.sh` did in
+Part A / Prerequisites.
 
-### Namespace stuck in `Terminating` after teardown?
-
-This happens if the AWS Load Balancer Controller gets uninstalled (Helm
-release removed) **before** `bmi-frontend-svc` finishes being deleted. The
-Service has a `service.k8s.aws/resources` finalizer that only the
-controller can clear — with the controller gone, nothing will ever remove
-it, so the Service (and the namespace containing it) stays stuck forever.
-`teardown.sh` avoids this by deleting the Service and waiting for it to
-fully disappear *before* uninstalling the controller — but if you run the
-steps manually/out of order, or interrupt the script mid-way, you can hit
-this. Check for it and fix it:
-
+If you also attached `AmazonEC2ContainerRegistryReadOnly` to role `SSM`
+solely for this deployment and no longer need ECR pulls from these nodes,
+detach it too:
 ```bash
-kubectl get svc bmi-frontend-svc -n bmi-app -o yaml | grep -E "deletionTimestamp|finalizers"
+aws iam detach-role-policy --role-name SSM \
+  --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly \
+  --profile sarowar-ostad
 ```
-
-If you see a `deletionTimestamp` and `service.k8s.aws/resources` in
-`finalizers`, and you've already confirmed the real NLB/target group are
-gone from AWS (`aws elbv2 describe-load-balancers`), it's safe to manually
-clear the finalizer so Kubernetes can finish removing the object:
-
-```bash
-kubectl patch svc bmi-frontend-svc -n bmi-app -p '{"metadata":{"finalizers":[]}}' --type=merge
-```
-
-The namespace should finish terminating within a few seconds afterward.
-
----
-
-## Project Lead
-
-Sarowar Alam — Ostad DevOps Mastering Program
