@@ -221,71 +221,45 @@ still bridges it to the internet.
    # PORT(S) column looks like 80:32305/TCP — 32305 is the NodePort you need next
    ```
 
-4. **Create the AWS NLB manually — on your laptop, profile `sarowar-ostad`.**
-   Target the **3 nodes' private IPs on that NodePort**, not the MetalLB VIP
-   (see the caveat in [§3](#3-what-is-metallb-and-why-here)):
+4. **Create the AWS NLB — on your laptop, profile `sarowar-ostad`**, via
+   [`create-nlb.sh`](create-nlb.sh). It targets the **3 nodes' private IPs on
+   that NodePort**, not the MetalLB VIP (see the caveat in
+   [§3](#3-what-is-metallb-and-why-here)), and is idempotent — safe to re-run
+   after a redeploy without creating duplicate resources:
    ```bash
    # on your laptop, profile sarowar-ostad
-   VPC_ID=<your-vpc-id>                 # derive via subnet lookup, see LoadBalancer-annotations/README.md §4 if needed
-   NODEPORT=<nodeport-from-step-3>
-   PUBLIC_SUBNET_IDS="<public-subnet-id-1> <public-subnet-id-2>"
-   MASTER_IP=<master-private-ip>
-   WORKER1_IP=<worker-1-private-ip>
-   WORKER2_IP=<worker-2-private-ip>
-
-   TG_ARN=$(aws elbv2 create-target-group \
-     --name bmi-frontend-tg \
-     --protocol TCP --port "${NODEPORT}" \
-     --target-type ip \
-     --vpc-id "${VPC_ID}" \
+   # find the nodes' shared security group once:
+   aws ec2 describe-instances --instance-ids <any-node-instance-id> \
      --profile sarowar-ostad --region ap-south-1 \
-     --query 'TargetGroups[0].TargetGroupArn' --output text)
-   echo "TG_ARN=${TG_ARN}"
+     --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text
 
-   aws elbv2 register-targets \
-     --target-group-arn "${TG_ARN}" \
-     --targets "Id=${MASTER_IP},Port=${NODEPORT}" "Id=${WORKER1_IP},Port=${NODEPORT}" "Id=${WORKER2_IP},Port=${NODEPORT}" \
-     --profile sarowar-ostad --region ap-south-1
+   # derive VPC_ID via subnet lookup if needed, see LoadBalancer-annotations/README.md §4
+   export AWS_PROFILE=sarowar-ostad
+   export AWS_REGION=ap-south-1
+   export VPC_ID=<your-vpc-id>
+   export NODEPORT=<nodeport-from-step-3>
+   export PUBLIC_SUBNET_IDS="<public-subnet-id-1> <public-subnet-id-2>"
+   export MASTER_IP=<master-private-ip>
+   export WORKER1_IP=<worker-1-private-ip>
+   export WORKER2_IP=<worker-2-private-ip>
+   export NODES_SECURITY_GROUP_ID=<sg-id-from-above>
 
-   LB_ARN=$(aws elbv2 create-load-balancer \
-     --name bmi-frontend-nlb \
-     --type network \
-     --scheme internet-facing \
-     --subnets ${PUBLIC_SUBNET_IDS} \
-     --profile sarowar-ostad --region ap-south-1 \
-     --query 'LoadBalancers[0].LoadBalancerArn' --output text)
-   echo "LB_ARN=${LB_ARN}"
-
-   aws elbv2 create-listener \
-     --load-balancer-arn "${LB_ARN}" \
-     --protocol TCP --port 80 \
-     --default-actions "Type=forward,TargetGroupArn=${TG_ARN}" \
-     --profile sarowar-ostad --region ap-south-1
-
-   aws elbv2 describe-load-balancers --load-balancer-arns "${LB_ARN}" \
-     --profile sarowar-ostad --region ap-south-1 \
-     --query 'LoadBalancers[0].DNSName' --output text
+   bash k8s-LoadBalancer/create-nlb.sh
    ```
-   Then confirm the **nodes' security group** allows inbound TCP on
-   `${NODEPORT}` from the NLB's subnets (or `0.0.0.0/0` if you want it
-   reachable from anywhere) — least-privilege: prefer scoping the rule to
-   the VPC CIDR rather than opening it to the whole internet, since the NLB
-   itself is what the internet actually talks to.
-   ```bash
-   # find the nodes' security group, then:
-   aws ec2 authorize-security-group-ingress \
-     --group-id <nodes-security-group-id> \
-     --protocol tcp --port "${NODEPORT}" --cidr <vpc-cidr, e.g. 10.0.0.0/16> \
-     --profile sarowar-ostad --region ap-south-1
-   ```
+   This creates (or reuses) the target group + the 3 target registrations +
+   the load balancer + the listener, opens the NodePort in the nodes'
+   security group (scoped to the VPC CIDR by default — see `SG_CIDR` in the
+   script header for the least-privilege rationale), and prints the target
+   group ARN, load balancer ARN, and DNS name at the end.
+
    Wait ~2–3 minutes for target health checks to pass, then check:
    ```bash
-   aws elbv2 describe-target-health --target-group-arn "${TG_ARN}" \
+   aws elbv2 describe-target-health --target-group-arn <TG_ARN-from-script-output> \
      --profile sarowar-ostad --region ap-south-1
    # Expected: all 3 targets State=healthy
    ```
 
-5. **Get the app URL** — the NLB's DNS name from step 4:
+5. **Get the app URL** — the NLB's DNS name printed by the script:
    ```bash
    curl http://<nlb-dns-name>/
    ```
@@ -393,19 +367,28 @@ Run all of these **on the control-plane node**, inside the cloned repo
     # PORT(S) column shows the NodePort, e.g. 80:32305/TCP
     ```
 
-12. **Create the AWS NLB manually** — same procedure as Part A, step 4
-    (target the 3 nodes' private IPs on the NodePort found above, **not**
-    the MetalLB VIP), then verify with Part A, step 5.
+12. **Create the AWS NLB** — same procedure as Part A, step 4
+    ([`create-nlb.sh`](create-nlb.sh), targeting the 3 nodes' private IPs on
+    the NodePort found above, **not** the MetalLB VIP), then verify with
+    Part A, step 5.
 
 ## 5. Teardown
 
 ### Step 1 — AWS-side (run from your local laptop, profile `sarowar-ostad`)
 
 Delete the NLB first, so nothing keeps referencing the target group or
-security group rule below:
-
+security group rule below. Re-derive the ARNs by name — the `TG_ARN`/`LB_ARN`
+shell variables from creation almost certainly aren't set in your current
+shell session:
 ```bash
 # on your laptop, profile sarowar-ostad
+TG_ARN=$(aws elbv2 describe-target-groups --names bmi-frontend-tg \
+  --profile sarowar-ostad --region ap-south-1 \
+  --query 'TargetGroups[0].TargetGroupArn' --output text)
+LB_ARN=$(aws elbv2 describe-load-balancers --names bmi-frontend-nlb \
+  --profile sarowar-ostad --region ap-south-1 \
+  --query 'LoadBalancers[0].LoadBalancerArn' --output text)
+
 aws elbv2 describe-listeners --load-balancer-arn "${LB_ARN}" \
   --profile sarowar-ostad --region ap-south-1 --query 'Listeners[].ListenerArn' --output text \
   | xargs -n1 -I{} aws elbv2 delete-listener --listener-arn {} --profile sarowar-ostad --region ap-south-1
@@ -418,11 +401,13 @@ aws elbv2 delete-target-group --target-group-arn "${TG_ARN}" \
   --profile sarowar-ostad --region ap-south-1
 ```
 
-If you opened a dedicated security-group rule for the NodePort, revoke it:
+If [`create-nlb.sh`](create-nlb.sh) opened a security-group rule for the
+NodePort, revoke it (same `NODEPORT`/`NODES_SECURITY_GROUP_ID`/`SG_CIDR`
+values used to create it):
 ```bash
 aws ec2 revoke-security-group-ingress \
   --group-id <nodes-security-group-id> \
-  --protocol tcp --port "${NODEPORT}" --cidr <vpc-cidr> \
+  --protocol tcp --port <nodeport> --cidr <vpc-cidr> \
   --profile sarowar-ostad --region ap-south-1
 ```
 
