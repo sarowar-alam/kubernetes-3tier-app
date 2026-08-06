@@ -12,16 +12,17 @@
 # admin profile. Idempotent -- safe to re-run: reuses an existing target
 # group / load balancer / listener / security-group rule instead of failing.
 #
-# Usage:
-#   AWS_PROFILE=sarowar-ostad \
-#   AWS_REGION=ap-south-1 \
-#   VPC_ID=vpc-xxxxxxxx \
-#   NODEPORT=30526 \
-#   PUBLIC_SUBNET_IDS="subnet-xxxx subnet-yyyy" \
-#   MASTER_IP=10.0.x.x \
-#   WORKER1_IP=10.0.x.x \
-#   WORKER2_IP=10.0.x.x \
-#   NODES_SECURITY_GROUP_ID=sg-xxxxxxxx \
+# Usage -- export each var first (plain VAR=val assignments are NOT
+# inherited by the script since it runs as a separate process):
+#   export AWS_PROFILE=sarowar-ostad
+#   export AWS_REGION=ap-south-1
+#   export VPC_ID=vpc-0fb1f03806261b9ec
+#   export NODEPORT=30526
+#   export PUBLIC_SUBNET_IDS="subnet-0b88d7678355c6163 subnet-092082346b72435a2"
+#   export MASTER_IP="10.0.2.236"
+#   export WORKER1_IP="10.0.143.131"
+#   export WORKER2_IP="10.0.142.85"
+#   export NODES_SECURITY_GROUP_ID=sg-0daa5c936d47c169a
 #   bash k8s-LoadBalancer/create-nlb.sh
 #
 # Optional overrides:
