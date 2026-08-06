@@ -155,15 +155,28 @@ real AWS load balancer end-to-end.
 ### A. With the automation script
 
 1. **AWS-side, one-time, run from your local laptop** (not the cluster —
-   this needs IAM/EC2 admin permissions beyond the node's own role):
+   this needs IAM/EC2 admin permissions beyond the node's own role).
+   **⚠️ If your account has more than one VPC, `Vpcs[0]` from a bare
+   `describe-vpcs` call is ambiguous and can silently resolve to the wrong
+   one** (an AWS Load Balancer Controller pointed at the wrong `vpcId` fails
+   every `CreateSecurityGroup` call with `InvalidVpcID.NotFound`, and it
+   fails silently from the Service's point of view — no targets ever
+   register and no hostname ever appears). Derive `VPC_ID` from one of your
+   known public subnet IDs instead — a subnet always belongs to exactly one
+   VPC:
    ```bash
    # on your laptop, profile sarowar-ostad
+   PUBLIC_SUBNET_IDS="<public-subnet-id-1> <public-subnet-id-2>"
+   VPC_ID=$(aws ec2 describe-subnets --profile sarowar-ostad \
+              --subnet-ids ${PUBLIC_SUBNET_IDS} \
+              --query "Subnets[0].VpcId" --output text)
+   echo "Resolved VPC_ID=${VPC_ID}"   # sanity-check this before continuing
+
    AWS_PROFILE=sarowar-ostad \
    NODE_ROLE_NAME=SSM \
-   VPC_ID=$(aws ec2 describe-vpcs --profile sarowar-ostad \
-              --query "Vpcs[0].VpcId" --output text) \
+   VPC_ID="${VPC_ID}" \
    CLUSTER_NAME=bmi-k8s-lab \
-   PUBLIC_SUBNET_IDS="<public-subnet-id-1> <public-subnet-id-2>" \
+   PUBLIC_SUBNET_IDS="${PUBLIC_SUBNET_IDS}" \
    bash k8s-LoadBalancer-annotations/aws-lb-controller/setup-iam-and-subnets.sh
    ```
    This creates IAM policy `AWSLoadBalancerControllerIAMPolicy`, attaches it
