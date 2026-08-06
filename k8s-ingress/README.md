@@ -226,60 +226,47 @@ variant also requires.
    curl http://<any-node-ip>:30080/
    ```
 
-3. **Create the AWS NLB — on your laptop, profile `sarowar-ostad`.** Unlike
-   the MetalLB variant, this target group uses **target-type `instance`**
-   (registering the 3 EC2 instance IDs directly) rather than `ip`, since
-   there's no floating VIP here to route around — every node's own
-   `ingress-nginx` NodePort `30080` answers regardless of which node's pod
-   handles the request:
+3. **Create the AWS NLB — on your laptop, profile `sarowar-ostad`**, via
+   [`create-nlb.sh`](create-nlb.sh). Unlike the MetalLB variant, this target
+   group uses **target-type `instance`** (registering the 3 EC2 instance IDs
+   directly) rather than `ip`, since there's no floating VIP here to route
+   around — every node's own `ingress-nginx` NodePort `30080` answers
+   regardless of which node's pod handles the request. The script is
+   idempotent — safe to re-run after a redeploy without creating duplicate
+   resources:
    ```bash
    # on your laptop, profile sarowar-ostad
-   VPC_ID=<your-vpc-id>
-   PUBLIC_SUBNET_A=<public-subnet-id-1>   # e.g. ap-south-1a
-   PUBLIC_SUBNET_B=<public-subnet-id-2>   # e.g. ap-south-1b
-   MASTER_ID=<master-instance-id>
-   WORKER1_ID=<worker-1-instance-id>
-   WORKER2_ID=<worker-2-instance-id>
-
-   # Target group — type Instance, TCP:30080, HTTP health check on "/"
-   TG_ARN=$(aws elbv2 create-target-group \
-     --name bmi-ingress-tg --protocol TCP --port 30080 --vpc-id "$VPC_ID" \
-     --target-type instance \
-     --health-check-protocol HTTP --health-check-path / --health-check-port 30080 \
+   # find the nodes' shared security group and instance IDs once:
+   aws ec2 describe-instances --instance-ids <any-node-instance-id> \
      --profile sarowar-ostad --region ap-south-1 \
-     --query 'TargetGroups[0].TargetGroupArn' --output text)
+     --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text
 
-   # Register all 3 nodes — NodePort 30080 is open on every node regardless
-   # of which one the ingress-nginx pod lands on
-   aws elbv2 register-targets --target-group-arn "$TG_ARN" \
-     --targets Id=$MASTER_ID Id=$WORKER1_ID Id=$WORKER2_ID \
-     --profile sarowar-ostad --region ap-south-1
+   export AWS_PROFILE=sarowar-ostad
+   export AWS_REGION=ap-south-1
+   export VPC_ID=<your-vpc-id>
+   export NODEPORT=30080
+   export PUBLIC_SUBNET_IDS="<public-subnet-id-1> <public-subnet-id-2>"
+   export MASTER_ID=<master-instance-id>
+   export WORKER1_ID=<worker-1-instance-id>
+   export WORKER2_ID=<worker-2-instance-id>
+   export NODES_SECURITY_GROUP_ID=<sg-id-from-above>
 
-   # Internet-facing Network Load Balancer, spanning both public subnets
-   LB_ARN=$(aws elbv2 create-load-balancer \
-     --name bmi-ingress-nlb --type network --scheme internet-facing \
-     --subnets "$PUBLIC_SUBNET_A" "$PUBLIC_SUBNET_B" \
-     --profile sarowar-ostad --region ap-south-1 \
-     --query 'LoadBalancers[0].LoadBalancerArn' --output text)
-
-   # Listener — TCP port 80 -> forward to the target group above
-   aws elbv2 create-listener --load-balancer-arn "$LB_ARN" \
-     --protocol TCP --port 80 \
-     --default-actions Type=forward,TargetGroupArn="$TG_ARN" \
-     --profile sarowar-ostad --region ap-south-1
+   bash k8s-ingress/create-nlb.sh
    ```
-   Wait ~1-2 minutes for targets to go `healthy`, then get the DNS name:
+   This creates (or reuses) the target group + the 3 target registrations +
+   the load balancer + the listener, opens NodePort `30080` to the internet
+   in the nodes' security group (the NLB has no security group of its own —
+   see `SG_CIDR` in the script header), and prints the target group ARN,
+   load balancer ARN, and DNS name at the end.
+
+   Wait ~1-2 minutes for target health checks to pass, then check:
    ```bash
-   aws elbv2 describe-target-health --target-group-arn "$TG_ARN" \
-     --profile sarowar-ostad --region ap-south-1 \
-     --query 'TargetHealthDescriptions[].[Target.Id,TargetHealth.State]' --output table
-
-   aws elbv2 describe-load-balancers --load-balancer-arns "$LB_ARN" \
-     --profile sarowar-ostad --region ap-south-1 \
-     --query 'LoadBalancers[0].DNSName' --output text
+   aws elbv2 describe-target-health --target-group-arn <TG_ARN-from-script-output> \
+     --profile sarowar-ostad --region ap-south-1
+   # Expected: all 3 targets State=healthy
    ```
 
-4. **Test:**
+4. **Test** — the NLB's DNS name printed by the script:
    ```bash
    curl http://<nlb-dns-name>/
    curl http://<nlb-dns-name>/api/measurements
@@ -407,9 +394,9 @@ Run all of these **on the control-plane node**, inside the cloned repo
     curl http://<any-node-ip>:30080/
     ```
 
-12. **Create the AWS NLB** — same procedure as Part A, step 3 (target-type
-    `instance`, targeting all 3 EC2 instance IDs on NodePort `30080`), then
-    verify with Part A, step 4.
+12. **Create the AWS NLB** — same procedure as Part A, step 3
+    ([`create-nlb.sh`](create-nlb.sh), target-type `instance`, targeting all
+    3 EC2 instance IDs on NodePort `30080`), then verify with Part A, step 4.
 
 ## 5. Teardown
 
