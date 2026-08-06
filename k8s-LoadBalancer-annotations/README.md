@@ -119,10 +119,13 @@ real AWS load balancer end-to-end.
   ```
 - All 3 EC2 instances share one IAM instance-profile **role — by convention
   named `SSM`** in this setup. Confirm its name once:
+  **⚠️ this profile's default region may not be `ap-south-1`** — always pass
+  `--region` explicitly on `ec2` calls, or `describe-instances` will fail
+  with a misleading "not found" instead of an auth error:
   ```bash
   # on your laptop, profile sarowar-ostad
   aws ec2 describe-instances --instance-ids <any-node-instance-id> \
-    --profile sarowar-ostad \
+    --profile sarowar-ostad --region ap-south-1 \
     --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text
   aws iam list-instance-profiles --profile sarowar-ostad \
     --query "InstanceProfiles[?Arn=='<arn-from-above>'].Roles[0].RoleName" --output text
@@ -167,7 +170,7 @@ real AWS load balancer end-to-end.
    ```bash
    # on your laptop, profile sarowar-ostad
    PUBLIC_SUBNET_IDS="<public-subnet-id-1> <public-subnet-id-2>"
-   VPC_ID=$(aws ec2 describe-subnets --profile sarowar-ostad \
+   VPC_ID=$(aws ec2 describe-subnets --profile sarowar-ostad --region ap-south-1 \
               --subnet-ids ${PUBLIC_SUBNET_IDS} \
               --query "Subnets[0].VpcId" --output text)
    echo "Resolved VPC_ID=${VPC_ID}"   # sanity-check this before continuing
